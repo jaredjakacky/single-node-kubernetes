@@ -32,5 +32,6 @@ resource "hcloud_server" "k8s_01" {
 
   lifecycle {
     prevent_destroy = true
+    ignore_changes  = [ssh_keys]
   }
 }
