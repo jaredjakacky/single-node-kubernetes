@@ -9,7 +9,8 @@ The cloud infrastructure is provisioned with Terraform and the cluster is
 built with kubeadm and containerd.
 
 This repository contains the infrastructure, Kubernetes configuration, and
-operational documentation for the cluster.
+operational documentation for the cluster. Live deployment automation and
+production credentials are intentionally kept outside this public repository.
 
 ## Architecture
 
