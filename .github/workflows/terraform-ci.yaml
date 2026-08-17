@@ -12,6 +12,64 @@ permissions:
   contents: read
 
 jobs:
+  host:
+    name: Validate host bootstrap
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Check shell syntax
+        run: bash -n host/bootstrap.sh
+
+      - name: Install ShellCheck
+        env:
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          SHELLCHECK_VERSION: v0.11.0
+        run: |
+          archive="shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl --fail --location --silent --show-error \
+            --output "${RUNNER_TEMP}/${archive}" \
+            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${archive}"
+          echo "${SHELLCHECK_SHA256}  ${RUNNER_TEMP}/${archive}" | sha256sum --check
+          tar --extract --file "${RUNNER_TEMP}/${archive}" --directory "${RUNNER_TEMP}"
+          echo "${RUNNER_TEMP}/shellcheck-${SHELLCHECK_VERSION}" >> "${GITHUB_PATH}"
+
+      - name: Run ShellCheck
+        run: shellcheck host/bootstrap.sh
+
+      - name: Install cloud-init validator
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cloud-init
+
+      - name: Render and validate cloud-init
+        run: |
+          bootstrap_sh="$(base64 --wrap=0 host/bootstrap.sh)"
+          containerd_config="$(base64 --wrap=0 host/containerd-config.toml)"
+          containerd_service="$(base64 --wrap=0 host/containerd.service)"
+          rendered="${RUNNER_TEMP}/cloud-init.yaml"
+
+          sed \
+            -e "s#\${bootstrap_sh}#${bootstrap_sh}#" \
+            -e "s#\${containerd_config}#${containerd_config}#" \
+            -e "s#\${containerd_service}#${containerd_service}#" \
+            infra/hetzner/cloud-init.yaml.tftpl > "${rendered}"
+
+          if grep --fixed-strings --quiet '${' "${rendered}"; then
+            echo "Rendered cloud-init contains an unresolved template expression." >&2
+            exit 1
+          fi
+
+          cloud-init schema --config-file "${rendered}"
+          user_data_bytes="$(wc --bytes < "${rendered}")"
+          echo "Rendered user_data: ${user_data_bytes} / 32768 bytes"
+          if ((user_data_bytes > 32768)); then
+            echo "Rendered Hetzner user_data exceeds the supported 32 KiB limit." >&2
+            exit 1
+          fi
+
   validate:
     name: Validate Terraform
     runs-on: ubuntu-latest
