@@ -1,0 +1,8 @@
+---
+- name: Configure Kubernetes nodes
+  hosts: kubernetes_nodes
+  gather_facts: true
+  become: true
+
+  roles:
+    - role: base
