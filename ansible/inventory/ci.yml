@@ -1,0 +1,5 @@
+---
+# Static-validation inventory only. This reserved hostname is not a real node.
+kubernetes_nodes:
+  hosts:
+    ci-placeholder.invalid:
