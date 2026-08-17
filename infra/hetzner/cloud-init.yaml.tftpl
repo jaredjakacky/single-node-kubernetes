@@ -1,0 +1,21 @@
+#cloud-config
+
+write_files:
+  - path: /usr/local/lib/single-node-kubernetes/bootstrap.sh
+    owner: root:root
+    permissions: "0755"
+    encoding: b64
+    content: ${bootstrap_sh}
+  - path: /usr/local/lib/single-node-kubernetes/containerd.service
+    owner: root:root
+    permissions: "0644"
+    encoding: b64
+    content: ${containerd_service}
+  - path: /usr/local/lib/single-node-kubernetes/containerd-config.toml
+    owner: root:root
+    permissions: "0644"
+    encoding: b64
+    content: ${containerd_config}
+
+runcmd:
+  - ["/usr/local/lib/single-node-kubernetes/bootstrap.sh"]
