@@ -47,7 +47,7 @@
 - name: Disable swap entries in fstab
   ansible.builtin.replace:
     path: /etc/fstab
-    regexp: '^([ \t]*)([^# \t]\S*[ \t]+\S+[ \t]+swap(?:[ \t]+[^# \t]\S*){0,3})([ \t]*(?:#.*)?)$'
+    regexp: '^([ \t]*)([^# \t\r\n]\S*[ \t]+\S+[ \t]+swap(?:[ \t]+[^# \t\r\n]\S*){0,3})([ \t]*(?:#.*)?)$'
     replace: '\1# Ansible disabled swap: \2\3'
 
 - name: Check whether the overlay module is loaded
@@ -63,26 +63,16 @@
 - name: Load the overlay module at boot
   ansible.builtin.copy:
     content: "overlay\n"
-    dest: /etc/modules-load.d/single-node-kubernetes.conf
+    dest: /etc/modules-load.d/kubernetes.conf
     owner: root
     group: root
     mode: "0644"
 
-- name: Read runtime IPv4 forwarding state
-  ansible.builtin.command: /sbin/sysctl --values net.ipv4.ip_forward
-  register: base_ipv4_forward
-  changed_when: false
-
-- name: Enable IPv4 forwarding at runtime
-  ansible.builtin.command: /sbin/sysctl --write net.ipv4.ip_forward=1
-  when: base_ipv4_forward.stdout | trim != "1"
-  changed_when: true
-
-- name: Persist IPv4 forwarding
-  ansible.builtin.copy:
-    content: "net.ipv4.ip_forward = 1\n"
-    dest: /etc/sysctl.d/90-single-node-kubernetes.conf
-    owner: root
-    group: root
-    mode: "0644"
-  notify: Apply Kubernetes sysctl settings
+- name: Enable IPv4 forwarding
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-kubernetes.conf
+    sysctl_set: true
+    reload: true

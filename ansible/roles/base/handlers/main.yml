@@ -1,5 +1,0 @@
----
-- name: Apply Kubernetes sysctl settings
-  ansible.builtin.command: >-
-    /sbin/sysctl --load=/etc/sysctl.d/90-single-node-kubernetes.conf
-  changed_when: true

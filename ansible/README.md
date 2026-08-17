@@ -13,11 +13,16 @@ The private deployment repository will provide the production target and its
 credentials. `inventory/ci.yml` contains a non-routable placeholder used only
 for static validation. Do not use it to run the playbook.
 
-From the repository root, install and run the local static checks with:
+`requirements.txt` contains the Python tooling dependencies.
+`requirements.yml` contains the Ansible collection dependencies.
+
+From the repository root, install the dependencies and run the local static
+checks with:
 
 ```sh
 python -m pip install -r ansible/requirements.txt
 cd ansible
+ansible-galaxy collection install -r requirements.yml
 ansible-lint
 ansible-playbook --inventory inventory/ci.yml --syntax-check playbooks/node.yml
 ```
