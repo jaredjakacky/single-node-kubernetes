@@ -1,0 +1,183 @@
+---
+- name: Fetch the containerd checksum manifest
+  ansible.builtin.uri:
+    url: >-
+      https://github.com/containerd/containerd/releases/download/v{{ containerd_version }}/containerd-{{ containerd_version }}-linux-amd64.tar.gz.sha256sum
+    return_content: true
+  register: containerd_checksum_manifest
+  changed_when: false
+
+- name: Select the containerd archive checksum
+  ansible.builtin.set_fact:
+    containerd_archive_checksums: >-
+      {{
+        containerd_checksum_manifest.content
+        | regex_findall(
+          '(?m)^([0-9a-f]{64})  containerd-'
+          ~ (containerd_version | regex_escape)
+          ~ '-linux-amd64\.tar\.gz$'
+        )
+      }}
+
+- name: Require one valid containerd archive checksum
+  ansible.builtin.assert:
+    that:
+      - containerd_archive_checksums | length == 1
+    fail_msg: >-
+      The official containerd {{ containerd_version }} checksum manifest did
+      not contain exactly one SHA-256 entry for the linux-amd64 archive.
+
+- name: Fetch the runc checksum manifest
+  ansible.builtin.uri:
+    url: >-
+      https://github.com/opencontainers/runc/releases/download/v{{ containerd_runc_version }}/runc.sha256sum
+    return_content: true
+  register: containerd_runc_checksum_manifest
+  changed_when: false
+
+- name: Select the runc amd64 checksum
+  ansible.builtin.set_fact:
+    containerd_runc_binary_checksums: >-
+      {{
+        containerd_runc_checksum_manifest.content
+        | regex_findall('(?m)^([0-9a-f]{64})  runc\.amd64$')
+      }}
+
+- name: Require one valid runc amd64 checksum
+  ansible.builtin.assert:
+    that:
+      - containerd_runc_binary_checksums | length == 1
+    fail_msg: >-
+      The official runc {{ containerd_runc_version }} checksum manifest did
+      not contain exactly one SHA-256 entry for runc.amd64.
+
+- name: Create runtime installation directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /var/cache/containerd
+    - "/usr/local/lib/containerd/{{ containerd_version }}"
+    - "/usr/local/lib/runc/{{ containerd_runc_version }}"
+
+- name: Download the containerd archive
+  ansible.builtin.get_url:
+    url: >-
+      https://github.com/containerd/containerd/releases/download/v{{ containerd_version }}/containerd-{{ containerd_version }}-linux-amd64.tar.gz
+    dest: >-
+      /var/cache/containerd/containerd-{{ containerd_version }}-linux-amd64.tar.gz
+    checksum: "sha256:{{ containerd_archive_checksums[0] }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Inspect the containerd archive contents
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/tar
+      - --list
+      - --gzip
+      - --file
+      - >-
+        /var/cache/containerd/containerd-{{ containerd_version }}-linux-amd64.tar.gz
+  register: containerd_archive_contents
+  changed_when: false
+
+- name: Require the expected containerd archive shape
+  ansible.builtin.assert:
+    that:
+      - >-
+        containerd_archive_contents.stdout_lines | sort
+        == containerd_expected_archive_contents | sort
+    fail_msg: >-
+      The official containerd {{ containerd_version }} linux-amd64 archive did
+      not contain exactly the expected runtime binaries.
+  vars:
+    containerd_expected_archive_contents:
+      - bin/
+      - bin/containerd
+      - bin/containerd-shim-runc-v2
+      - bin/containerd-stress
+      - bin/ctr
+
+- name: Install the versioned containerd binaries
+  ansible.builtin.unarchive:
+    src: >-
+      /var/cache/containerd/containerd-{{ containerd_version }}-linux-amd64.tar.gz
+    dest: "/usr/local/lib/containerd/{{ containerd_version }}"
+    remote_src: true
+    owner: root
+    group: root
+    creates: >-
+      /usr/local/lib/containerd/{{ containerd_version }}/bin/containerd-stress
+  notify: Restart containerd
+
+- name: Install the versioned runc binary
+  ansible.builtin.get_url:
+    url: >-
+      https://github.com/opencontainers/runc/releases/download/v{{ containerd_runc_version }}/runc.amd64
+    dest: "/usr/local/lib/runc/{{ containerd_runc_version }}/runc"
+    checksum: "sha256:{{ containerd_runc_binary_checksums[0] }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart containerd
+
+- name: Link the active runtime binaries
+  ansible.builtin.file:
+    src: "{{ item.src }}"
+    dest: "/usr/local/bin/{{ item.name }}"
+    state: link
+  loop:
+    - name: containerd
+      src: >-
+        /usr/local/lib/containerd/{{ containerd_version }}/bin/containerd
+    - name: containerd-shim-runc-v2
+      src: >-
+        /usr/local/lib/containerd/{{ containerd_version }}/bin/containerd-shim-runc-v2
+    - name: ctr
+      src: "/usr/local/lib/containerd/{{ containerd_version }}/bin/ctr"
+    - name: runc
+      src: "/usr/local/lib/runc/{{ containerd_runc_version }}/runc"
+  notify: Restart containerd
+
+- name: Create the containerd configuration directory
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the containerd systemd service
+  ansible.builtin.copy:
+    src: containerd.service
+    dest: /etc/systemd/system/containerd.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart containerd
+
+- name: Configure containerd
+  ansible.builtin.template:
+    src: config.toml.j2
+    dest: /etc/containerd/config.toml
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/local/bin/containerd --config %s config dump
+  notify: Restart containerd
+
+- name: Apply pending containerd changes before validation
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start containerd
+  ansible.builtin.systemd_service:
+    name: containerd
+    enabled: true
+    state: started

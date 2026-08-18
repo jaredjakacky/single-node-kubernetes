@@ -1,0 +1,93 @@
+---
+- name: Read the installed containerd version
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/containerd
+      - --version
+  register: containerd_version_output
+  changed_when: false
+
+- name: Read the installed runc version
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/runc
+      - --version
+  register: containerd_runc_version_output
+  changed_when: false
+
+- name: Check whether containerd is active
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - containerd
+  register: containerd_active
+  changed_when: false
+
+- name: Check whether containerd is enabled
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - containerd
+  register: containerd_enabled
+  changed_when: false
+
+- name: Inspect the containerd socket
+  ansible.builtin.stat:
+    path: /run/containerd/containerd.sock
+  register: containerd_socket
+
+- name: Inspect loaded containerd plugins
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/ctr
+      - plugins
+      - list
+  register: containerd_plugins
+  changed_when: false
+
+- name: Read the effective containerd configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/containerd
+      - --config
+      - /etc/containerd/config.toml
+      - config
+      - dump
+  register: containerd_effective_config
+  changed_when: false
+
+- name: Validate the container runtime
+  ansible.builtin.assert:
+    that:
+      - >-
+        ("v" ~ containerd_version)
+        in containerd_version_output.stdout.split()
+      - >-
+        containerd_runc_version_output.stdout_lines[0]
+        == "runc version " ~ containerd_runc_version
+      - containerd_active.stdout == "active"
+      - containerd_enabled.stdout == "enabled"
+      - containerd_socket.stat.issock | default(false)
+      - >-
+        containerd_plugins.stdout
+        is search('(?m)^io\.containerd\.cri\.v1\s+images\s+.*\s+ok$')
+      - >-
+        containerd_plugins.stdout
+        is search('(?m)^io\.containerd\.cri\.v1\s+runtime\s+.*\s+ok$')
+      - >-
+        containerd_effective_config.stdout
+        is search('SystemdCgroup = true')
+      - >-
+        containerd_effective_config.stdout
+        is search("default_runtime_name = 'runc'")
+      - >-
+        containerd_effective_config.stdout
+        is search("runtime_type = 'io\.containerd\.runc\.v2'")
+      - >-
+        containerd_effective_config.stdout
+        is search("BinaryName = '/usr/local/bin/runc'")
+    fail_msg: >-
+      containerd did not pass runtime validation. Check the registered command
+      output and the containerd journal for details.

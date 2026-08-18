@@ -1,0 +1,6 @@
+---
+- name: Install and configure the container runtime
+  ansible.builtin.import_tasks: install.yml
+
+- name: Validate the container runtime
+  ansible.builtin.import_tasks: validate.yml
