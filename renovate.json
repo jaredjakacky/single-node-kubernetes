@@ -4,5 +4,31 @@
   "automerge": false,
   "lockFileMaintenance": {
     "enabled": true
-  }
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^ansible\\/roles\\/containerd\\/defaults\\/main\\.yml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+) versioning=(?<versioning>\\S+)\\ncontainerd_(?:runc_)?version: \"(?<currentValue>[^\"]+)\""
+      ]
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Keep containerd on the selected 2.3 LTS release line",
+      "matchDatasources": ["github-releases"],
+      "matchPackageNames": ["containerd/containerd"],
+      "allowedVersions": "/^v?2\\.3\\./"
+    },
+    {
+      "description": "Track supported stable runc 1.x releases",
+      "matchDatasources": ["github-releases"],
+      "matchPackageNames": ["opencontainers/runc"],
+      "allowedVersions": "/^v?1\\./",
+      "ignoreUnstable": true
+    }
+  ]
 }
