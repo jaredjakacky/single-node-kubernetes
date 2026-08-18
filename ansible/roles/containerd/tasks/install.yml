@@ -112,8 +112,17 @@
     owner: root
     group: root
     creates: >-
-      /usr/local/lib/containerd/{{ containerd_version }}/bin/containerd-stress
+      /usr/local/lib/containerd/{{ containerd_version }}/.installed-{{ containerd_archive_checksums[0] }}
   notify: Restart containerd
+
+- name: Record the successful containerd installation
+  ansible.builtin.copy:
+    content: "{{ containerd_archive_checksums[0] }}\n"
+    dest: >-
+      /usr/local/lib/containerd/{{ containerd_version }}/.installed-{{ containerd_archive_checksums[0] }}
+    owner: root
+    group: root
+    mode: "0644"
 
 - name: Install the versioned runc binary
   ansible.builtin.get_url:
