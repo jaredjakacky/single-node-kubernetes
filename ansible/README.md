@@ -13,9 +13,9 @@ The containerd role installs pinned official upstream containerd and runc
 releases under versioned `/usr/local/lib` directories and exposes the active
 binaries through `/usr/local/bin`. Debian 13's containerd 1.7 package is not
 used because this project intentionally tracks the containerd 2.3 LTS release
-line. Renovate maintains the containerd 2.3 and runc 1.5 pins without
-automerge. Downloads are verified against the matching official upstream
-SHA-256 manifests before installation.
+line. Renovate keeps containerd on 2.3 LTS while tracking supported stable runc
+1.x releases, without automerge. Downloads are verified against the matching
+official upstream SHA-256 manifests before installation.
 
 containerd uses its concise version 4 configuration with the CRI plugin, the
 `io.containerd.runc.v2` runtime, and `SystemdCgroup = true` for this systemd and

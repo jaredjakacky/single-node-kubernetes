@@ -24,10 +24,11 @@
       "allowedVersions": "/^v?2\\.3\\./"
     },
     {
-      "description": "Keep runc on the selected 1.5 release line",
+      "description": "Track supported stable runc 1.x releases",
       "matchDatasources": ["github-releases"],
       "matchPackageNames": ["opencontainers/runc"],
-      "allowedVersions": "/^v?1\\.5\\./"
+      "allowedVersions": "/^v?1\\./",
+      "ignoreUnstable": true
     }
   ]
 }
