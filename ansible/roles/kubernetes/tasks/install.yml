@@ -25,6 +25,38 @@
     group: root
     mode: "0644"
 
+- name: Read existing Kubernetes package versions
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/dpkg-query
+      - --show
+      - '--showformat=${db:Status-Status}\t${Version}'
+      - "{{ item }}"
+  loop:
+    - kubeadm
+    - kubectl
+    - kubelet
+  register: kubernetes_existing_packages
+  changed_when: false
+  failed_when: false
+
+- name: Require the explicit Kubernetes upgrade workflow for version changes
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.rc != 0
+        or item.stdout.split('\t')[0] != 'installed'
+        or item.stdout.split('\t')[1] == kubernetes_package_version
+    fail_msg: >-
+      {{ item.item }} is installed at
+      {{ (item.stdout.split('\t') | last) | default('unknown', true) }}, but
+      {{ kubernetes_package_version }} is desired. Normal node convergence does
+      not change installed Kubernetes package versions. Use the dedicated
+      Kubernetes upgrade workflow before changing this package.
+  loop: "{{ kubernetes_existing_packages.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
 - name: Install pinned Kubernetes packages
   ansible.builtin.apt:
     name:
@@ -34,8 +66,6 @@
     state: present
     update_cache: true
     cache_valid_time: 3600
-    allow_change_held_packages: true
-    allow_downgrade: true
 
 - name: Hold Kubernetes packages for deliberate upgrades
   ansible.builtin.dpkg_selections:
@@ -45,12 +75,3 @@
     - kubeadm
     - kubectl
     - kubelet
-
-# The kubelet package runs `systemctl preset kubelet.service` during install.
-# Keep it disabled and stopped until kubeadm bootstrap supplies its configuration.
-- name: Leave kubelet stopped and disabled before cluster bootstrap
-  ansible.builtin.systemd_service:
-    name: kubelet
-    state: stopped
-    enabled: false
-    daemon_reload: true

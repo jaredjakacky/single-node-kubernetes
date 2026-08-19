@@ -54,42 +54,7 @@
     src: /etc/apt/sources.list.d/kubernetes.list
   register: kubernetes_apt_repository
 
-- name: Check whether kubelet is enabled
-  ansible.builtin.command:
-    argv:
-      - /usr/bin/systemctl
-      - is-enabled
-      - kubelet
-  register: kubernetes_kubelet_enabled
-  changed_when: false
-  failed_when: false
-
-- name: Check whether kubelet is active
-  ansible.builtin.command:
-    argv:
-      - /usr/bin/systemctl
-      - is-active
-      - kubelet
-  register: kubernetes_kubelet_active
-  changed_when: false
-  failed_when: false
-
-- name: Check for an initialized admin kubeconfig
-  ansible.builtin.stat:
-    path: /etc/kubernetes/admin.conf
-  register: kubernetes_admin_conf
-
-- name: Check for control-plane static Pod manifests
-  ansible.builtin.stat:
-    path: "/etc/kubernetes/manifests/{{ item }}"
-  loop:
-    - etcd.yaml
-    - kube-apiserver.yaml
-    - kube-controller-manager.yaml
-    - kube-scheduler.yaml
-  register: kubernetes_control_plane_manifests
-
-- name: Validate Kubernetes tooling before cluster bootstrap
+- name: Validate Kubernetes tooling
   ansible.builtin.assert:
     that:
       - >-
@@ -112,16 +77,6 @@
       - "'kubeadm' in kubernetes_held_packages.stdout_lines"
       - "'kubectl' in kubernetes_held_packages.stdout_lines"
       - "'kubelet' in kubernetes_held_packages.stdout_lines"
-      - kubernetes_kubelet_enabled.stdout == "disabled"
-      - kubernetes_kubelet_active.stdout == "inactive"
-      - not kubernetes_admin_conf.stat.exists
-      - >-
-        kubernetes_control_plane_manifests.results
-        | selectattr('stat.exists')
-        | list
-        | length
-        == 0
     fail_msg: >-
-      Kubernetes tooling did not pass pre-bootstrap validation. Verify the
-      installed versions, apt repository, package holds, kubelet state, and
-      absence of cluster bootstrap artifacts.
+      Kubernetes tooling did not pass validation. Verify the installed
+      versions, apt repository, and package holds.

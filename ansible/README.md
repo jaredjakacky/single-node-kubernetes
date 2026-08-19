@@ -6,8 +6,8 @@ Ansible, and Ansible does not manage cloud resources.
 
 `playbooks/node.yml` configures a Kubernetes node. It applies `roles/base` for
 the common Debian host configuration, `roles/containerd` for the container
-runtime, and `roles/kubernetes` for the pre-bootstrap Kubernetes tooling. The
-playbook is idempotent and can be run again safely.
+runtime, and `roles/kubernetes` for the Kubernetes tooling. The playbook is
+idempotent and can be run again safely.
 
 The containerd role installs pinned official upstream containerd and runc
 releases under versioned `/usr/local/lib` directories and exposes the active
@@ -24,12 +24,15 @@ cgroup v2 host.
 The Kubernetes role configures the official Kubernetes 1.36 apt repository and
 installs matching, exact versions of kubeadm, kubelet, and kubectl. The packages
 are held for deliberate upgrades, while Renovate proposes stable Kubernetes
-1.36 patch releases without automerge. The kubelet package may enable its
-service through the systemd preset policy, so this pre-bootstrap role explicitly
-leaves kubelet stopped and disabled.
+1.36 patch releases without automerge. Normal node convergence installs missing
+packages but refuses to change an installed Kubernetes package version. A
+desired-version change therefore requires a separate, orchestrated Kubernetes
+upgrade workflow.
 
-Cluster bootstrap remains a separate future layer: this role does not run
-`kubeadm init`, create control-plane manifests, or select and configure a CNI.
+Cluster bootstrap is outside this role: it does not run `kubeadm init` or select
+and configure a CNI. Kubelet service state and configuration are owned by the
+package and cluster-bootstrap lifecycle; kubelet may restart while waiting for
+kubeadm to supply its configuration.
 
 This public repository does not contain production inventory or credentials.
 The private deployment repository will provide the production target and its
