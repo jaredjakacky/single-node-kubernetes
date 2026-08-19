@@ -24,6 +24,13 @@
     owner: root
     group: root
     mode: "0644"
+  register: kubernetes_apt_repository_configuration
+
+# This must run before package installation, not at the end of the play.
+- name: Refresh the apt cache after configuring the Kubernetes repository # noqa no-handler
+  ansible.builtin.apt:
+    update_cache: true
+  when: kubernetes_apt_repository_configuration.changed
 
 - name: Read existing Kubernetes package versions
   ansible.builtin.command:
