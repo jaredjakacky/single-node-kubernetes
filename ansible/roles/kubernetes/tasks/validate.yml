@@ -1,0 +1,127 @@
+---
+- name: Read installed Kubernetes package versions
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/dpkg-query
+      - --show
+      - "--showformat=${Version}"
+      - "{{ item }}"
+  loop:
+    - kubeadm
+    - kubectl
+    - kubelet
+  register: kubernetes_installed_packages
+  changed_when: false
+
+- name: Read the installed kubeadm version
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubeadm
+      - version
+      - --output
+      - short
+  register: kubernetes_kubeadm_version
+  changed_when: false
+
+- name: Read the installed kubelet version
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubelet
+      - --version
+  register: kubernetes_kubelet_version
+  changed_when: false
+
+- name: Read the installed kubectl client version
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - version
+      - --client=true
+      - --output=json
+  register: kubernetes_kubectl_version
+  changed_when: false
+
+- name: Read held packages
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/apt-mark
+      - showhold
+  register: kubernetes_held_packages
+  changed_when: false
+
+- name: Read the configured Kubernetes apt repository
+  ansible.builtin.slurp:
+    src: /etc/apt/sources.list.d/kubernetes.list
+  register: kubernetes_apt_repository
+
+- name: Check whether kubelet is enabled
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - kubelet
+  register: kubernetes_kubelet_enabled
+  changed_when: false
+  failed_when: false
+
+- name: Check whether kubelet is active
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - kubelet
+  register: kubernetes_kubelet_active
+  changed_when: false
+  failed_when: false
+
+- name: Check for an initialized admin kubeconfig
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: kubernetes_admin_conf
+
+- name: Check for control-plane static Pod manifests
+  ansible.builtin.stat:
+    path: "/etc/kubernetes/manifests/{{ item }}"
+  loop:
+    - etcd.yaml
+    - kube-apiserver.yaml
+    - kube-controller-manager.yaml
+    - kube-scheduler.yaml
+  register: kubernetes_control_plane_manifests
+
+- name: Validate Kubernetes tooling before cluster bootstrap
+  ansible.builtin.assert:
+    that:
+      - >-
+        kubernetes_installed_packages.results
+        | map(attribute='stdout')
+        | unique
+        | list
+        == [kubernetes_package_version]
+      - kubernetes_kubeadm_version.stdout == "v" ~ kubernetes_version
+      - >-
+        kubernetes_kubelet_version.stdout
+        == "Kubernetes v" ~ kubernetes_version
+      - >-
+        (kubernetes_kubectl_version.stdout | from_json).clientVersion.gitVersion
+        == "v" ~ kubernetes_version
+      - >-
+        (kubernetes_apt_repository.content | b64decode | trim)
+        == "deb [signed-by=/etc/apt/keyrings/kubernetes-release-key.asc] "
+        ~ "https://pkgs.k8s.io/core:/stable:/v1.36/deb/ /"
+      - "'kubeadm' in kubernetes_held_packages.stdout_lines"
+      - "'kubectl' in kubernetes_held_packages.stdout_lines"
+      - "'kubelet' in kubernetes_held_packages.stdout_lines"
+      - kubernetes_kubelet_enabled.stdout == "disabled"
+      - kubernetes_kubelet_active.stdout == "inactive"
+      - not kubernetes_admin_conf.stat.exists
+      - >-
+        kubernetes_control_plane_manifests.results
+        | selectattr('stat.exists')
+        | list
+        | length
+        == 0
+    fail_msg: >-
+      Kubernetes tooling did not pass pre-bootstrap validation. Verify the
+      installed versions, apt repository, package holds, kubelet state, and
+      absence of cluster bootstrap artifacts.

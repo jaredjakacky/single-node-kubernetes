@@ -1,0 +1,56 @@
+---
+- name: Create the apt keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the Kubernetes repository signing key
+  ansible.builtin.get_url:
+    url: https://pkgs.k8s.io/core:/stable:/v1.36/deb/Release.key
+    dest: /etc/apt/keyrings/kubernetes-release-key.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure the Kubernetes 1.36 apt repository
+  ansible.builtin.copy:
+    content: >-
+      deb [signed-by=/etc/apt/keyrings/kubernetes-release-key.asc]
+      https://pkgs.k8s.io/core:/stable:/v1.36/deb/ /
+    dest: /etc/apt/sources.list.d/kubernetes.list
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install pinned Kubernetes packages
+  ansible.builtin.apt:
+    name:
+      - "kubeadm={{ kubernetes_package_version }}"
+      - "kubectl={{ kubernetes_package_version }}"
+      - "kubelet={{ kubernetes_package_version }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    allow_change_held_packages: true
+    allow_downgrade: true
+
+- name: Hold Kubernetes packages for deliberate upgrades
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubeadm
+    - kubectl
+    - kubelet
+
+# The kubelet package runs `systemctl preset kubelet.service` during install.
+# Keep it disabled and stopped until kubeadm bootstrap supplies its configuration.
+- name: Leave kubelet stopped and disabled before cluster bootstrap
+  ansible.builtin.systemd_service:
+    name: kubelet
+    state: stopped
+    enabled: false
+    daemon_reload: true
