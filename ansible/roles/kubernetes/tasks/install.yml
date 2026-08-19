@@ -1,0 +1,84 @@
+---
+- name: Create the apt keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the Kubernetes repository signing key
+  ansible.builtin.get_url:
+    url: https://pkgs.k8s.io/core:/stable:/v1.36/deb/Release.key
+    dest: /etc/apt/keyrings/kubernetes-release-key.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure the Kubernetes 1.36 apt repository
+  ansible.builtin.copy:
+    content: >-
+      deb [signed-by=/etc/apt/keyrings/kubernetes-release-key.asc]
+      https://pkgs.k8s.io/core:/stable:/v1.36/deb/ /
+    dest: /etc/apt/sources.list.d/kubernetes.list
+    owner: root
+    group: root
+    mode: "0644"
+  register: kubernetes_apt_repository_configuration
+
+# This must run before package installation, not at the end of the play.
+- name: Refresh the apt cache after configuring the Kubernetes repository # noqa no-handler
+  ansible.builtin.apt:
+    update_cache: true
+  when: kubernetes_apt_repository_configuration.changed
+
+- name: Read existing Kubernetes package versions
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/dpkg-query
+      - --show
+      - '--showformat=${db:Status-Status}\t${Version}'
+      - "{{ item }}"
+  loop:
+    - kubeadm
+    - kubectl
+    - kubelet
+  register: kubernetes_existing_packages
+  changed_when: false
+  failed_when: false
+
+- name: Require the explicit Kubernetes upgrade workflow for version changes
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.rc != 0
+        or item.stdout.split('\t')[0] != 'installed'
+        or item.stdout.split('\t')[1] == kubernetes_package_version
+    fail_msg: >-
+      {{ item.item }} is installed at
+      {{ (item.stdout.split('\t') | last) | default('unknown', true) }}, but
+      {{ kubernetes_package_version }} is desired. Normal node convergence does
+      not change installed Kubernetes package versions. Use the dedicated
+      Kubernetes upgrade workflow before changing this package.
+  loop: "{{ kubernetes_existing_packages.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Install pinned Kubernetes packages
+  ansible.builtin.apt:
+    name:
+      - "kubeadm={{ kubernetes_package_version }}"
+      - "kubectl={{ kubernetes_package_version }}"
+      - "kubelet={{ kubernetes_package_version }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Hold Kubernetes packages for deliberate upgrades
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubeadm
+    - kubectl
+    - kubelet

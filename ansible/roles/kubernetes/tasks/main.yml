@@ -1,0 +1,6 @@
+---
+- name: Install Kubernetes tooling
+  ansible.builtin.import_tasks: install.yml
+
+- name: Validate Kubernetes tooling
+  ansible.builtin.import_tasks: validate.yml

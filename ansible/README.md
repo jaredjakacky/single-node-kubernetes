@@ -4,10 +4,10 @@ Terraform provisions the Hetzner infrastructure. Ansible configures the Linux
 operating system after the machine has been provisioned. Terraform does not run
 Ansible, and Ansible does not manage cloud resources.
 
-`playbooks/node.yml` configures a Kubernetes node. It first applies `roles/base`,
-which owns the common Debian host configuration, and then `roles/containerd`,
-which installs and validates the container runtime. The playbook is idempotent
-and can be run again safely.
+`playbooks/node.yml` configures a Kubernetes node. It applies `roles/base` for
+the common Debian host configuration, `roles/containerd` for the container
+runtime, and `roles/kubernetes` for the Kubernetes tooling. The playbook is
+idempotent and can be run again safely.
 
 The containerd role installs pinned official upstream containerd and runc
 releases under versioned `/usr/local/lib` directories and exposes the active
@@ -19,8 +19,20 @@ official upstream SHA-256 manifests before installation.
 
 containerd uses its concise version 4 configuration with the CRI plugin, the
 `io.containerd.runc.v2` runtime, and `SystemdCgroup = true` for this systemd and
-cgroup v2 host. This layer installs only the container runtime; Kubernetes and
-CNI installation remain future work.
+cgroup v2 host.
+
+The Kubernetes role configures the official Kubernetes 1.36 apt repository and
+installs matching, exact versions of kubeadm, kubelet, and kubectl. The packages
+are held for deliberate upgrades, while Renovate proposes stable Kubernetes
+1.36 patch releases without automerge. Normal node convergence installs missing
+packages but refuses to change an installed Kubernetes package version. A
+desired-version change therefore requires a separate, orchestrated Kubernetes
+upgrade workflow.
+
+Cluster bootstrap is outside this role: it does not run `kubeadm init` or select
+and configure a CNI. Kubelet service state and configuration are owned by the
+package and cluster-bootstrap lifecycle; kubelet may restart while waiting for
+kubeadm to supply its configuration.
 
 This public repository does not contain production inventory or credentials.
 The private deployment repository will provide the production target and its

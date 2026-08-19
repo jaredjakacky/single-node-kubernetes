@@ -14,6 +14,15 @@
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+) versioning=(?<versioning>\\S+)\\ncontainerd_(?:runc_)?version: \"(?<currentValue>[^\"]+)\""
       ]
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^ansible\\/roles\\/kubernetes\\/defaults\\/main\\.yml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+) versioning=(?<versioning>\\S+)\\nkubernetes_version: \"(?<currentValue>[^\"]+)\""
+      ]
     }
   ],
   "packageRules": [
@@ -28,6 +37,13 @@
       "matchDatasources": ["github-releases"],
       "matchPackageNames": ["opencontainers/runc"],
       "allowedVersions": "/^v?1\\./",
+      "ignoreUnstable": true
+    },
+    {
+      "description": "Keep Kubernetes on stable 1.36 patch releases",
+      "matchDatasources": ["github-releases"],
+      "matchPackageNames": ["kubernetes/kubernetes"],
+      "allowedVersions": "/^v?1\\.36\\./",
       "ignoreUnstable": true
     }
   ]
