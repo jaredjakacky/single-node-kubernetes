@@ -72,10 +72,10 @@
       - containerd_socket.stat.issock | default(false)
       - >-
         containerd_plugins.stdout
-        is search('(?m)^io\.containerd\.cri\.v1\s+images\s+.*\s+ok$')
+        is search('(?m)^io\.containerd\.cri\.v1[ \t]+images[ \t]+\S+[ \t]+ok[ \t]*$')
       - >-
         containerd_plugins.stdout
-        is search('(?m)^io\.containerd\.cri\.v1\s+runtime\s+.*\s+ok$')
+        is search('(?m)^io\.containerd\.cri\.v1[ \t]+runtime[ \t]+\S+[ \t]+ok[ \t]*$')
       - >-
         containerd_effective_config.stdout
         is search('SystemdCgroup = true')
@@ -88,6 +88,9 @@
       - >-
         containerd_effective_config.stdout
         is search("BinaryName = '/usr/local/bin/runc'")
-    fail_msg: >-
+    fail_msg: |-
       containerd did not pass runtime validation. Check the registered command
       output and the containerd journal for details.
+
+      ctr plugins list output:
+      {{ containerd_plugins.stdout }}
