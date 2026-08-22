@@ -10,7 +10,7 @@
 - name: Extract the running kernel version
   ansible.builtin.set_fact:
     cilium_host_running_kernel_version: >-
-      {{ ansible_kernel | regex_search('^[0-9]+(?:\.[0-9]+){1,2}') }}
+      {{ ansible_facts['kernel'] | regex_search('^[0-9]+(?:\.[0-9]+){1,2}') }}
 
 - name: Require a Cilium-supported kernel version
   ansible.builtin.assert:
@@ -21,11 +21,11 @@
         is version(cilium_host_minimum_kernel_version, '>=')
     fail_msg: >-
       Cilium requires Linux {{ cilium_host_minimum_kernel_version }} or newer.
-      The running kernel is {{ ansible_kernel }}.
+      The running kernel is {{ ansible_facts['kernel'] }}.
 
 - name: Inspect the configuration for the running kernel
   ansible.builtin.stat:
-    path: "/boot/config-{{ ansible_kernel }}"
+    path: "/boot/config-{{ ansible_facts['kernel'] }}"
   register: cilium_host_kernel_config_file
 
 - name: Require the running kernel configuration
@@ -35,11 +35,11 @@
       - cilium_host_kernel_config_file.stat.isreg | default(false)
     fail_msg: >-
       Cannot validate Cilium kernel capabilities because the configuration for
-      the running kernel is not available at /boot/config-{{ ansible_kernel }}.
+      the running kernel is not available at /boot/config-{{ ansible_facts['kernel'] }}.
 
 - name: Read the running kernel configuration
   ansible.builtin.slurp:
-    src: "/boot/config-{{ ansible_kernel }}"
+    src: "/boot/config-{{ ansible_facts['kernel'] }}"
   register: cilium_host_kernel_config_file_content
 
 - name: Decode the running kernel configuration
