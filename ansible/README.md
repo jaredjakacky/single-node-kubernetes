@@ -23,10 +23,10 @@ owns the required built-in capabilities and loadable modules; the Cilium host
 role validates them without preloading or persisting modules. Cilium will own
 the bpffs mount later through its default `bpf.autoMount.enabled=true` setting,
 so Ansible deliberately creates neither an fstab entry nor a systemd mount
-unit. `br_netfilter` and the bridge netfilter sysctls are also deliberately not
-enabled because Cilium does not require them for this datapath. Optional kernel
-modules for L7 and FQDN policy are outside the selected feature set and are not
-enabled.
+unit. `br_netfilter` and the bridge netfilter sysctls are intentionally not
+enabled or managed by this role because the selected Cilium datapath does not
+require them. Optional kernel modules for L7 and FQDN policy are outside the
+selected feature set and are not enabled.
 
 The containerd role installs pinned official upstream containerd and runc
 releases under versioned `/usr/local/lib` directories and exposes the active
