@@ -22,6 +22,11 @@ production credentials are intentionally kept outside this public repository.
 
 Additional platform components will be documented as they are added.
 
+The Ansible lifecycle separates repeatable node convergence from Kubernetes
+control-plane bootstrap. Bootstrap uses kubeadm only on a confirmed-fresh host
+and validates existing cluster state on later runs. Cilium installation remains
+a separate, subsequent lifecycle step.
+
 ## Status
 
 Work in progress.

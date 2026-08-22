@@ -1,0 +1,44 @@
+---
+# mkdir is used deliberately because ansible.builtin.file cannot atomically
+# refuse an existing directory created by another Ansible controller.
+- name: Acquire the Kubernetes bootstrap lifecycle lock # noqa command-instead-of-module
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/mkdir
+      - --
+      - "{{ kubernetes_bootstrap_lock_directory }}"
+  register: kubernetes_bootstrap_lock_acquisition
+  changed_when: false
+  failed_when: false
+
+- name: Refuse a concurrent or abandoned bootstrap execution
+  ansible.builtin.fail:
+    msg: >-
+      Cannot acquire {{ kubernetes_bootstrap_lock_directory }}. Another
+      bootstrap execution may be active, or a previous controller may have
+      terminated without releasing its lock. Confirm that no bootstrap process
+      is running before removing an abandoned lock manually.
+  when: kubernetes_bootstrap_lock_acquisition.rc != 0
+
+- name: Run the locked Kubernetes bootstrap lifecycle
+  when: kubernetes_bootstrap_lock_acquisition.rc == 0
+  block:
+    - name: Record bootstrap lock ownership
+      ansible.builtin.copy:
+        content: |-
+          inventory_host={{ inventory_hostname }}
+          acquired_at={{ ansible_date_time.iso8601 }}
+        dest: "{{ kubernetes_bootstrap_lock_directory }}/owner"
+        owner: root
+        group: root
+        mode: "0600"
+      changed_when: false
+
+    - name: Run Kubernetes bootstrap state management
+      ansible.builtin.import_tasks: lifecycle.yml
+  always:
+    - name: Release the Kubernetes bootstrap lifecycle lock
+      ansible.builtin.file:
+        path: "{{ kubernetes_bootstrap_lock_directory }}"
+        state: absent
+      changed_when: false

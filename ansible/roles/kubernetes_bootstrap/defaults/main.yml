@@ -1,0 +1,21 @@
+---
+kubernetes_bootstrap_config_directory: /etc/kubeadm
+kubernetes_bootstrap_config_path: "{{ kubernetes_bootstrap_config_directory }}/init.yaml"
+
+kubernetes_bootstrap_node_name: "{{ ansible_facts.hostname }}"
+kubernetes_bootstrap_node_ip: "{{ kubernetes_bootstrap_advertise_address }}"
+kubernetes_bootstrap_advertise_address: ""
+kubernetes_bootstrap_control_plane_endpoint: ""
+
+kubernetes_bootstrap_cluster_name: single-node-kubernetes
+kubernetes_bootstrap_service_subnet: 10.96.0.0/12
+kubernetes_bootstrap_dns_domain: cluster.local
+kubernetes_bootstrap_api_server_cert_sans: []
+
+kubernetes_bootstrap_api_ready_retries: 12
+kubernetes_bootstrap_api_ready_delay: 5
+kubernetes_bootstrap_control_plane_ready_retries: 12
+kubernetes_bootstrap_control_plane_ready_delay: 5
+
+kubernetes_bootstrap_minimum_free_bytes: 5368709120
+kubernetes_bootstrap_minimum_free_inodes: 100000

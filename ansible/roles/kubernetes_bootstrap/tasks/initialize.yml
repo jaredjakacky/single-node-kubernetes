@@ -1,0 +1,37 @@
+---
+- name: Initialize Kubernetes with kubeadm
+  block:
+    - name: Enable and start kubelet for cluster bootstrap
+      ansible.builtin.systemd_service:
+        name: kubelet
+        enabled: true
+        state: started
+
+    - name: Run kubeadm init
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/kubeadm
+          - init
+          - --config
+          - "{{ kubernetes_bootstrap_config_path }}"
+          - --skip-token-print
+      register: kubernetes_bootstrap_init
+      changed_when: true
+  rescue:
+    - name: Collect failed-bootstrap diagnostics
+      ansible.builtin.include_tasks: diagnostics.yml
+
+    - name: Report failed Kubernetes initialization
+      ansible.builtin.fail:
+        msg: |-
+          kubeadm init failed. No reset, deletion, cleanup, or retry was
+          attempted.
+
+          kubeadm stderr:
+          {{ kubernetes_bootstrap_init.stderr | default('unavailable', true) }}
+
+          Extended kubelet and containerd diagnostics were written with mode
+          0600 to {{ kubernetes_bootstrap_diagnostic_log_path }}.
+
+          Diagnose and repair the host or perform a deliberate
+          operator-approved kubeadm reset before running bootstrap again.

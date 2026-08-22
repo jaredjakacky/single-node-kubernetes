@@ -73,7 +73,9 @@
       - >-
         (kubernetes_apt_repository.content | b64decode | trim)
         == "deb [signed-by=/etc/apt/keyrings/kubernetes-release-key.asc] "
-        ~ "https://pkgs.k8s.io/core:/stable:/v1.36/deb/ /"
+        ~ "https://pkgs.k8s.io/core:/stable:/v"
+        ~ kubernetes_minor_version
+        ~ "/deb/ /"
       - "'kubeadm' in kubernetes_held_packages.stdout_lines"
       - "'kubectl' in kubernetes_held_packages.stdout_lines"
       - "'kubelet' in kubernetes_held_packages.stdout_lines"

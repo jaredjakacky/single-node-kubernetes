@@ -1,0 +1,38 @@
+# Managed by Ansible. This is bootstrap input, not mutable live cluster state.
+apiVersion: {{ kubernetes_bootstrap_kubeadm_api_version }}
+kind: InitConfiguration
+dryRun: false
+localAPIEndpoint:
+  advertiseAddress: {{ kubernetes_bootstrap_advertise_address | to_json }}
+  bindPort: {{ kubernetes_bootstrap_api_bind_port }}
+nodeRegistration:
+  name: {{ kubernetes_bootstrap_node_name | to_json }}
+  criSocket: {{ kubernetes_bootstrap_cri_socket | to_json }}
+  taints: []
+  kubeletExtraArgs:
+    - name: node-ip
+      value: {{ kubernetes_bootstrap_node_ip | to_json }}
+---
+apiVersion: {{ kubernetes_bootstrap_kubeadm_api_version }}
+kind: ClusterConfiguration
+clusterName: {{ kubernetes_bootstrap_cluster_name | to_json }}
+kubernetesVersion: {{ ('v' ~ kubernetes_version) | to_json }}
+controlPlaneEndpoint: {{ kubernetes_bootstrap_control_plane_endpoint | to_json }}
+networking:
+  dnsDomain: {{ kubernetes_bootstrap_dns_domain | to_json }}
+  serviceSubnet: {{ kubernetes_bootstrap_service_subnet | to_json }}
+dns:
+  disabled: false
+proxy:
+  disabled: false
+{% if kubernetes_bootstrap_api_server_cert_sans | length > 0 %}
+apiServer:
+  certSANs:
+{% for san in kubernetes_bootstrap_api_server_cert_sans %}
+    - {{ san | to_json }}
+{% endfor %}
+{% endif %}
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd

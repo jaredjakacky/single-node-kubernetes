@@ -1,0 +1,189 @@
+---
+- name: Read active swap devices
+  ansible.builtin.command:
+    argv:
+      - /sbin/swapon
+      - --show
+      - --noheadings
+  register: kubernetes_bootstrap_active_swap
+  changed_when: false
+
+- name: Inspect the cgroup v2 controllers file
+  ansible.builtin.stat:
+    path: /sys/fs/cgroup/cgroup.controllers
+  register: kubernetes_bootstrap_cgroup_v2_controllers
+
+- name: Read active IPv4 forwarding
+  ansible.builtin.slurp:
+    src: /proc/sys/net/ipv4/ip_forward
+  register: kubernetes_bootstrap_ipv4_forwarding_file
+
+- name: Check time synchronization
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/timedatectl
+      - show
+      - --property=NTPSynchronized
+      - --value
+  register: kubernetes_bootstrap_ntp_synchronized
+  changed_when: false
+
+- name: Check whether containerd is active
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - containerd
+  register: kubernetes_bootstrap_containerd_active
+  changed_when: false
+
+- name: Check whether containerd is enabled
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - containerd
+  register: kubernetes_bootstrap_containerd_enabled
+  changed_when: false
+
+- name: Inspect the containerd socket
+  ansible.builtin.stat:
+    path: /run/containerd/containerd.sock
+  register: kubernetes_bootstrap_containerd_socket
+
+- name: Inspect loaded containerd plugins
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/ctr
+      - plugins
+      - list
+  register: kubernetes_bootstrap_containerd_plugins
+  changed_when: false
+
+- name: Read the effective containerd configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/containerd
+      - --config
+      - /etc/containerd/config.toml
+      - config
+      - dump
+  register: kubernetes_bootstrap_containerd_effective_config
+  changed_when: false
+
+- name: Require bootstrap host prerequisites
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.processor_vcpus | int >= 2
+      - ansible_facts.memtotal_mb | int >= 2048
+      - kubernetes_bootstrap_active_swap.stdout | trim | length == 0
+      - kubernetes_bootstrap_cgroup_v2_controllers.stat.isreg | default(false)
+      - kubernetes_bootstrap_ipv4_forwarding_file.content | b64decode | trim == '1'
+      - kubernetes_bootstrap_ntp_synchronized.stdout | trim == 'yes'
+      - kubernetes_bootstrap_containerd_active.stdout | trim == 'active'
+      - kubernetes_bootstrap_containerd_enabled.stdout | trim == 'enabled'
+      - kubernetes_bootstrap_containerd_socket.stat.issock | default(false)
+      - >-
+        kubernetes_bootstrap_containerd_plugins.stdout
+        is search('(?m)^io\.containerd\.cri\.v1[ \t]+images[ \t]+\S+[ \t]+ok[ \t]*$')
+      - >-
+        kubernetes_bootstrap_containerd_plugins.stdout
+        is search('(?m)^io\.containerd\.cri\.v1[ \t]+runtime[ \t]+\S+[ \t]+ok[ \t]*$')
+      - >-
+        kubernetes_bootstrap_containerd_effective_config.stdout
+        is search('SystemdCgroup = true')
+      - >-
+        kubernetes_bootstrap_containerd_effective_config.stdout
+        is search("runtime_type = 'io\.containerd\.runc\.v2'")
+    fail_msg: >-
+      The fresh host does not meet kubeadm bootstrap prerequisites. Require at
+      least 2 vCPUs and 2 GiB RAM, synchronized time, no swap, cgroup v2, IPv4
+      forwarding, and an enabled healthy containerd CRI runtime using the
+      systemd cgroup driver.
+
+- name: Read active IPv4 routes
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/ip
+      - -4
+      - -o
+      - route
+      - show
+  register: kubernetes_bootstrap_ipv4_routes
+  changed_when: false
+
+- name: Require the service subnet not to overlap host routes
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - |
+        import ipaddress
+        import sys
+
+        service_network = ipaddress.ip_network(sys.argv[1], strict=True)
+        for line in sys.argv[2].splitlines():
+            destination = line.split(maxsplit=1)[0]
+            if destination == "default":
+                continue
+            try:
+                route_network = ipaddress.ip_network(destination, strict=False)
+            except ValueError:
+                continue
+            if service_network.overlaps(route_network):
+                raise SystemExit(
+                    f"service subnet {service_network} overlaps host route {route_network}"
+                )
+      - "{{ kubernetes_bootstrap_service_subnet }}"
+      - "{{ kubernetes_bootstrap_ipv4_routes.stdout }}"
+  changed_when: false
+
+- name: Require storage capacity for Kubernetes state
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - |
+        import os
+        import sys
+
+        minimum_bytes = int(sys.argv[1])
+        minimum_inodes = int(sys.argv[2])
+        for requested_path in sys.argv[3:]:
+            path = requested_path
+            while not os.path.exists(path):
+                parent = os.path.dirname(path)
+                if parent == path:
+                    raise SystemExit(f"cannot resolve filesystem for {requested_path}")
+                path = parent
+            filesystem = os.statvfs(path)
+            free_bytes = filesystem.f_bavail * filesystem.f_frsize
+            free_inodes = filesystem.f_favail
+            if free_bytes < minimum_bytes:
+                raise SystemExit(
+                    f"{requested_path} has {free_bytes} free bytes; "
+                    f"at least {minimum_bytes} are required"
+                )
+            if free_inodes < minimum_inodes:
+                raise SystemExit(
+                    f"{requested_path} has {free_inodes} free inodes; "
+                    f"at least {minimum_inodes} are required"
+                )
+      - "{{ kubernetes_bootstrap_minimum_free_bytes }}"
+      - "{{ kubernetes_bootstrap_minimum_free_inodes }}"
+      - /var/lib/containerd
+      - /var/lib/kubelet
+      - /var/lib/etcd
+  changed_when: false
+
+- name: Run kubeadm initialization preflight checks
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubeadm
+      - init
+      - phase
+      - preflight
+      - --config
+      - "{{ kubernetes_bootstrap_config_path }}"
+      - --dry-run
+  changed_when: false

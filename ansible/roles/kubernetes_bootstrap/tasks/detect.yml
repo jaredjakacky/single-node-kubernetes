@@ -1,0 +1,195 @@
+---
+- name: Inspect kubeadm-generated state roots
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ kubernetes_bootstrap_state_roots }}"
+  register: kubernetes_bootstrap_state_root_stats
+
+- name: Inspect contents of kubeadm-generated state roots
+  ansible.builtin.find:
+    paths: "{{ item.item }}"
+    recurse: true
+    hidden: true
+    file_type: any
+    depth: 1
+  loop: "{{ kubernetes_bootstrap_state_root_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.isdir | default(false)
+  register: kubernetes_bootstrap_state_root_contents
+
+- name: Inspect expected kubeadm-generated state
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ kubernetes_bootstrap_state_evidence_paths }}"
+  register: kubernetes_bootstrap_state_files
+  failed_when: false
+
+- name: Inspect local etcd member data
+  ansible.builtin.find:
+    paths: "{{ kubernetes_bootstrap_etcd_member_path }}"
+    recurse: true
+    hidden: true
+    file_type: any
+    depth: 1
+  register: kubernetes_bootstrap_etcd_member_contents
+  when:
+    - >-
+      kubernetes_bootstrap_state_files.results
+      | selectattr('item', 'equalto', kubernetes_bootstrap_etcd_member_path)
+      | selectattr('stat.isdir', 'defined')
+      | selectattr('stat.isdir')
+      | list
+      | length == 1
+
+- name: Initialize bootstrap-state diagnostics
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_present_state_paths: >-
+      {{
+        (
+          kubernetes_bootstrap_state_root_contents.results
+          | rejectattr('skipped', 'defined')
+          | map(attribute='files')
+          | flatten
+          | map(attribute='path')
+          | list
+          + kubernetes_bootstrap_state_root_stats.results
+          | selectattr('stat.exists')
+          | rejectattr('stat.isdir')
+          | map(attribute='item')
+          | list
+          + kubernetes_bootstrap_state_files.results
+          | selectattr('stat.exists', 'defined')
+          | selectattr('stat.exists')
+          | map(attribute='item')
+          | list
+        )
+        | unique
+        | sort
+      }}
+    kubernetes_bootstrap_missing_required_state_paths: []
+    kubernetes_bootstrap_invalid_required_state_paths: []
+
+- name: Record missing required kubeadm state
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_missing_required_state_paths: >-
+      {{ kubernetes_bootstrap_missing_required_state_paths + [item.item] }}
+  when:
+    - item.item in kubernetes_bootstrap_required_state_paths
+    - not (item.stat.exists | default(false))
+  loop: "{{ kubernetes_bootstrap_state_files.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Record invalid required kubeadm files
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_invalid_required_state_paths: >-
+      {{ kubernetes_bootstrap_invalid_required_state_paths + [item.item] }}
+  when:
+    - item.item in kubernetes_bootstrap_required_state_files
+    - item.stat.exists | default(false)
+    - >-
+      not (
+        item.stat.isreg | default(false)
+        and item.stat.size | default(0) | int > 0
+      )
+  loop: "{{ kubernetes_bootstrap_state_files.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Record unexpected transient kubeadm state
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_invalid_required_state_paths: >-
+      {{ kubernetes_bootstrap_invalid_required_state_paths + [item.item] }}
+  when:
+    - item.item in kubernetes_bootstrap_forbidden_complete_state_paths
+    - item.stat.exists | default(false)
+  loop: "{{ kubernetes_bootstrap_state_files.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Record insecure kubeadm credentials and private keys
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_invalid_required_state_paths: >-
+      {{ kubernetes_bootstrap_invalid_required_state_paths + [item.item] }}
+  when:
+    - >-
+      item.item in kubernetes_bootstrap_privileged_kubeconfig_paths
+      or item.item in kubernetes_bootstrap_private_key_paths
+    - item.stat.exists | default(false)
+    - >-
+      not (
+        item.stat.isreg | default(false)
+        and item.stat.size | default(0) | int > 0
+        and item.stat.mode | default('') == '0600'
+        and item.stat.pw_name | default('') == 'root'
+        and item.stat.gr_name | default('') == 'root'
+      )
+  loop: "{{ kubernetes_bootstrap_state_files.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Record invalid local etcd state
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_invalid_required_state_paths: >-
+      {{
+        kubernetes_bootstrap_invalid_required_state_paths
+        + [kubernetes_bootstrap_etcd_member_path]
+      }}
+  vars:
+    kubernetes_bootstrap_etcd_member_stat: >-
+      {{
+        kubernetes_bootstrap_state_files.results
+        | selectattr('item', 'equalto', kubernetes_bootstrap_etcd_member_path)
+        | map(attribute='stat')
+        | first
+      }}
+  when:
+    - kubernetes_bootstrap_etcd_member_stat.exists | default(false)
+    - >-
+      not (
+        kubernetes_bootstrap_etcd_member_stat.isdir | default(false)
+        and kubernetes_bootstrap_etcd_member_contents.matched | default(0) | int > 0
+      )
+
+- name: Determine the local bootstrap state
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_local_state: >-
+      {{
+        'fresh'
+        if kubernetes_bootstrap_present_state_paths | length == 0
+        else 'complete'
+        if
+          kubernetes_bootstrap_missing_required_state_paths | length == 0
+          and kubernetes_bootstrap_invalid_required_state_paths | length == 0
+        else 'partial'
+      }}
+
+- name: Probe authenticated Kubernetes API readiness
+  ansible.builtin.command:
+    argv:
+      - "{{ kubernetes_bootstrap_kubectl_path }}"
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - --raw=/readyz
+  register: kubernetes_bootstrap_api_ready_probe
+  changed_when: false
+  failed_when: false
+  until: kubernetes_bootstrap_api_ready_probe.rc == 0
+  retries: "{{ kubernetes_bootstrap_api_ready_retries }}"
+  delay: "{{ kubernetes_bootstrap_api_ready_delay }}"
+  when: kubernetes_bootstrap_local_state == 'complete'
+
+- name: Determine the complete bootstrap state
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_state: >-
+      {{
+        'healthy'
+        if
+          kubernetes_bootstrap_local_state == 'complete'
+          and kubernetes_bootstrap_api_ready_probe.rc | default(1) == 0
+        else 'unhealthy'
+        if kubernetes_bootstrap_local_state == 'complete'
+        else kubernetes_bootstrap_local_state
+      }}
