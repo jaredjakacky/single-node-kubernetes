@@ -67,6 +67,17 @@ plane whose API does not become ready, or immutable configuration drift causes
 a hard failure. The role never runs `kubeadm reset`, deletes cluster state, or
 retries initialization automatically.
 
+The kubelet static Pod boundary is fail-closed. `/etc/kubernetes` must be a
+root-owned directory that is not writable by group or other users, and
+`/etc/kubernetes/manifests` must be root-owned with mode `0700`. Its direct
+contents must be exactly kubeadm's four expected `etcd`, API server,
+controller-manager, and scheduler manifests. Each manifest must be a non-empty
+root-owned regular file with mode `0600`; symlinks, permission or ownership
+drift, and every unexpected entry—including editor and backup files—are
+rejected. These violations classify existing state as partial. Bootstrap does
+not change their metadata or remove unexpected static Pod definitions
+automatically.
+
 The role holds an atomic host-local lock under `/run/lock` from initial state
 detection through final validation. This prevents independent Ansible
 controllers from both acting on the same fresh-state decision. A controller
@@ -87,7 +98,11 @@ own Pod CIDR allocation, so the kubeadm configuration deliberately omits
 `networking.podSubnet`. The future Cilium deployment must explicitly choose a
 non-overlapping IPv4 pool rather than accept Cilium's broad default. Until the
 CNI is installed, the Node may be `NotReady` and CoreDNS may be unavailable;
-neither condition is treated as a bootstrap failure.
+neither condition is treated as a bootstrap failure. Bootstrap still requires
+the Node to report a current `Ready` condition and requires `MemoryPressure`,
+`DiskPressure`, and `PIDPressure` to be `False`. It deliberately does not
+validate `NetworkUnavailable`; network readiness belongs to the Cilium
+lifecycle.
 
 Run the lifecycle in order:
 
@@ -153,6 +168,9 @@ ansible-lint
 ansible-playbook --inventory inventory/ci.yml --syntax-check playbooks/node.yml
 ansible-playbook --inventory inventory/ci.yml --syntax-check playbooks/bootstrap.yml
 ansible-playbook tests/bootstrap-state.yml
+ansible-playbook tests/kubeadm-flags.yml
+ansible-playbook tests/node-conditions.yml
+ansible-playbook tests/static-manifest-boundary.yml
 ansible-playbook \
   --extra-vars kubernetes_bootstrap_test_kubeadm_path=/path/to/pinned/kubeadm \
   tests/kubeadm-config.yml

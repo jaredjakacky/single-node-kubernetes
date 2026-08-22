@@ -22,6 +22,24 @@
       - --output=json
   register: kubernetes_bootstrap_node
   changed_when: false
+  until:
+    - kubernetes_bootstrap_node.rc == 0
+    - >-
+      (
+        kubernetes_bootstrap_required_node_condition_types
+        | difference(
+          (
+            kubernetes_bootstrap_node.stdout
+            | default('{}', true)
+            | from_json
+          ).get('status', {}).get('conditions', [])
+          | map(attribute='type')
+          | list
+        )
+        | length
+      ) == 0
+  retries: "{{ kubernetes_bootstrap_control_plane_ready_retries }}"
+  delay: "{{ kubernetes_bootstrap_control_plane_ready_delay }}"
 
 - name: Read the kubeadm cluster configuration
   ansible.builtin.command:
@@ -48,6 +66,9 @@
         ).data.ClusterConfiguration
         | from_yaml
       }}
+
+- name: Validate Kubernetes Node conditions
+  ansible.builtin.import_tasks: validate_node_conditions.yml
 
 - name: Validate control-plane static Pod mirror readiness
   ansible.builtin.import_tasks: validate_static_pods.yml
@@ -130,10 +151,15 @@
   register: kubernetes_bootstrap_coredns
   changed_when: false
 
+- name: Validate the static Pod manifest security boundary
+  ansible.builtin.import_tasks: validate_static_manifest_boundary.yml
+
 - name: Read control-plane static Pod manifests
   ansible.builtin.slurp:
-    src: "/etc/kubernetes/manifests/{{ item }}.yaml"
+    src: "{{ kubernetes_bootstrap_static_pod_manifest_directory }}/{{ item }}.yaml"
   loop: "{{ kubernetes_bootstrap_static_pod_components }}"
+  loop_control:
+    label: "{{ item }}"
   register: kubernetes_bootstrap_static_pod_manifests
 
 - name: Require valid control-plane static Pod manifests
@@ -142,8 +168,15 @@
       - (item.content | b64decode | from_yaml).apiVersion == 'v1'
       - (item.content | b64decode | from_yaml).kind == 'Pod'
       - (item.content | b64decode | from_yaml).metadata.name == item.item
+      - >-
+        (
+          (item.content | b64decode | from_yaml).spec.containers
+          | selectattr('name', 'equalto', item.item)
+          | list
+          | length
+        ) == 1
     fail_msg: >-
-      /etc/kubernetes/manifests/{{ item.item }}.yaml is not the expected
+      {{ kubernetes_bootstrap_static_pod_manifest_directory }}/{{ item.item }}.yaml is not the expected
       non-empty static Pod manifest.
   loop: "{{ kubernetes_bootstrap_static_pod_manifests.results }}"
   loop_control:
@@ -151,13 +184,26 @@
 
 - name: Select the API server static Pod manifest
   ansible.builtin.set_fact:
-    kubernetes_bootstrap_api_server_manifest_content: >-
+    kubernetes_bootstrap_api_server_manifest: >-
       {{
         kubernetes_bootstrap_static_pod_manifests.results
         | selectattr('item', 'equalto', 'kube-apiserver')
         | map(attribute='content')
         | first
         | b64decode
+        | from_yaml
+      }}
+
+- name: Select the API server advertise-address arguments
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_api_server_advertise_arguments: >-
+      {{
+        kubernetes_bootstrap_api_server_manifest.spec.containers
+        | selectattr('name', 'equalto', 'kube-apiserver')
+        | map(attribute='command')
+        | first
+        | select('match', '^--advertise-address(?:=|$)')
+        | list
       }}
 
 - name: Read the live kubelet configuration
@@ -170,10 +216,8 @@
     src: /var/lib/kubelet/instance-config.yaml
   register: kubernetes_bootstrap_kubelet_instance_configuration_file
 
-- name: Read the effective kubeadm kubelet flags
-  ansible.builtin.slurp:
-    src: /var/lib/kubelet/kubeadm-flags.env
-  register: kubernetes_bootstrap_kubelet_flags_file
+- name: Validate the effective kubeadm kubelet flags
+  ansible.builtin.import_tasks: validate_kubeadm_flags.yml
 
 - name: Inspect privileged kubeconfig files
   ansible.builtin.stat:
@@ -355,23 +399,12 @@
           | bool
         )
       - >-
-        kubernetes_bootstrap_api_server_manifest_content
-        is search(
-          '--advertise-address='
-          ~ (kubernetes_bootstrap_advertise_address | regex_escape)
-        )
+        kubernetes_bootstrap_api_server_advertise_arguments
+        == ['--advertise-address=' ~ kubernetes_bootstrap_advertise_address]
       - kubernetes_bootstrap_live_kubelet_configuration.cgroupDriver == 'systemd'
       - >-
         kubernetes_bootstrap_live_kubelet_instance_configuration.containerRuntimeEndpoint
         == kubernetes_bootstrap_cri_socket
-      - >-
-        kubernetes_bootstrap_kubelet_flags_file.content
-        | b64decode
-        is search(
-          '(?:^|[ \t])--node-ip='
-          ~ (kubernetes_bootstrap_node_ip | regex_escape)
-          ~ '(?:[ \t]|$)'
-        )
       - kubernetes_bootstrap_kubelet_active.stdout | trim == 'active'
       - kubernetes_bootstrap_kubelet_enabled.stdout | trim == 'enabled'
       - >-

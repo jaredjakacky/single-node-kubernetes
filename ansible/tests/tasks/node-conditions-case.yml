@@ -1,0 +1,30 @@
+---
+- name: Initialize the Kubernetes Node condition validation result
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_test_node_conditions_failed: false
+
+- name: Validate the Kubernetes Node condition test case
+  block:
+    - name: Invoke Kubernetes Node condition validation
+      ansible.builtin.include_role:
+        name: kubernetes_bootstrap
+        tasks_from: validate_node_conditions.yml
+      vars:
+        kubernetes_bootstrap_live_node:
+          status:
+            conditions: >-
+              {{ kubernetes_bootstrap_test_node_condition_case.conditions }}
+  rescue:
+    - name: Record rejected Kubernetes Node conditions
+      ansible.builtin.set_fact:
+        kubernetes_bootstrap_test_node_conditions_failed: true
+
+- name: Require the expected Kubernetes Node condition result
+  ansible.builtin.assert:
+    that:
+      - >-
+        kubernetes_bootstrap_test_node_conditions_failed
+        == kubernetes_bootstrap_test_node_condition_case.should_fail
+    fail_msg: >-
+      Case {{ kubernetes_bootstrap_test_node_condition_case.name }} produced an
+      unexpected validation result.

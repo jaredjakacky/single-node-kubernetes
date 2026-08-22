@@ -152,12 +152,48 @@
         and kubernetes_bootstrap_etcd_member_contents.matched | default(0) | int > 0
       )
 
+- name: Inspect the static Pod manifest security boundary
+  ansible.builtin.import_tasks: inspect_static_manifest_boundary.yml
+
+- name: Merge static Pod manifest boundary findings
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_present_state_paths: >-
+      {{
+        (
+          kubernetes_bootstrap_present_state_paths
+          + kubernetes_bootstrap_static_pod_manifest_unexpected_paths
+        )
+        | unique
+        | sort
+      }}
+    kubernetes_bootstrap_missing_required_state_paths: >-
+      {{
+        (
+          kubernetes_bootstrap_missing_required_state_paths
+          + kubernetes_bootstrap_static_pod_manifest_missing_paths
+        )
+        | unique
+        | sort
+      }}
+    kubernetes_bootstrap_invalid_required_state_paths: >-
+      {{
+        (
+          kubernetes_bootstrap_invalid_required_state_paths
+          + kubernetes_bootstrap_static_pod_manifest_invalid_paths
+          + kubernetes_bootstrap_static_pod_manifest_unexpected_paths
+        )
+        | unique
+        | sort
+      }}
+
 - name: Determine the local bootstrap state
   ansible.builtin.set_fact:
     kubernetes_bootstrap_local_state: >-
       {{
         'fresh'
-        if kubernetes_bootstrap_present_state_paths | length == 0
+        if
+          kubernetes_bootstrap_present_state_paths | length == 0
+          and kubernetes_bootstrap_invalid_required_state_paths | length == 0
         else 'complete'
         if
           kubernetes_bootstrap_missing_required_state_paths | length == 0

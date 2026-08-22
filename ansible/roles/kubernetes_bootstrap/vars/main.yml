@@ -8,6 +8,32 @@ kubernetes_bootstrap_diagnostic_log_path: >-
   {{ kubernetes_bootstrap_diagnostic_directory }}/bootstrap-diagnostics.log
 kubernetes_bootstrap_kubectl_path: /usr/bin/kubectl
 kubernetes_bootstrap_etcd_member_path: /var/lib/etcd/member
+kubernetes_bootstrap_kubelet_flags_path: /var/lib/kubelet/kubeadm-flags.env
+kubernetes_bootstrap_kubernetes_directory: /etc/kubernetes
+kubernetes_bootstrap_static_pod_manifest_directory: >-
+  {{ kubernetes_bootstrap_kubernetes_directory }}/manifests
+kubernetes_bootstrap_static_pod_manifest_directory_mode: "0700"
+kubernetes_bootstrap_static_pod_manifest_mode: "0600"
+kubernetes_bootstrap_static_pod_manifest_owner_uid: 0
+kubernetes_bootstrap_static_pod_manifest_owner_gid: 0
+
+kubernetes_bootstrap_expected_static_pod_manifests:
+  - component: etcd
+    path: "{{ kubernetes_bootstrap_static_pod_manifest_directory }}/etcd.yaml"
+  - component: kube-apiserver
+    path: >-
+      {{ kubernetes_bootstrap_static_pod_manifest_directory }}/kube-apiserver.yaml
+  - component: kube-controller-manager
+    path: >-
+      {{ kubernetes_bootstrap_static_pod_manifest_directory }}/kube-controller-manager.yaml
+  - component: kube-scheduler
+    path: >-
+      {{ kubernetes_bootstrap_static_pod_manifest_directory }}/kube-scheduler.yaml
+
+kubernetes_bootstrap_static_pod_components: >-
+  {{ kubernetes_bootstrap_expected_static_pod_manifests | map(attribute='component') | list }}
+kubernetes_bootstrap_static_pod_manifest_paths: >-
+  {{ kubernetes_bootstrap_expected_static_pod_manifests | map(attribute='path') | list }}
 
 # A host is fresh only when these kubeadm and kubelet state roots contain no
 # entries. The desired input file lives separately under /etc/kubeadm.
@@ -18,7 +44,7 @@ kubernetes_bootstrap_state_roots:
 
 # The desired input file under /etc/kubeadm is intentionally excluded. These
 # are all generated or populated by kubeadm and the kubelet bootstrap process.
-kubernetes_bootstrap_state_evidence_paths:
+kubernetes_bootstrap_non_manifest_state_evidence_paths:
   - /etc/kubernetes/admin.conf
   - /etc/kubernetes/bootstrap-kubelet.conf
   - /etc/kubernetes/super-admin.conf
@@ -47,19 +73,22 @@ kubernetes_bootstrap_state_evidence_paths:
   - /etc/kubernetes/pki/etcd/peer.key
   - /etc/kubernetes/pki/etcd/healthcheck-client.crt
   - /etc/kubernetes/pki/etcd/healthcheck-client.key
-  - /etc/kubernetes/manifests/kube-apiserver.yaml
-  - /etc/kubernetes/manifests/kube-controller-manager.yaml
-  - /etc/kubernetes/manifests/kube-scheduler.yaml
-  - /etc/kubernetes/manifests/etcd.yaml
   - "{{ kubernetes_bootstrap_etcd_member_path }}"
   - /var/lib/kubelet/config.yaml
-  - /var/lib/kubelet/kubeadm-flags.env
+  - "{{ kubernetes_bootstrap_kubelet_flags_path }}"
   - /var/lib/kubelet/instance-config.yaml
+
+kubernetes_bootstrap_state_evidence_paths: >-
+  {{
+    kubernetes_bootstrap_non_manifest_state_evidence_paths
+    + [kubernetes_bootstrap_static_pod_manifest_directory]
+    + kubernetes_bootstrap_static_pod_manifest_paths
+  }}
 
 # These files must be non-empty regular files on a complete cluster.
 # super-admin.conf may be moved to protected break-glass storage after
 # bootstrap, and bootstrap-kubelet.conf is removed after TLS bootstrap.
-kubernetes_bootstrap_required_state_files:
+kubernetes_bootstrap_non_manifest_required_state_files:
   - /etc/kubernetes/admin.conf
   - /etc/kubernetes/kubelet.conf
   - /etc/kubernetes/controller-manager.conf
@@ -86,15 +115,18 @@ kubernetes_bootstrap_required_state_files:
   - /etc/kubernetes/pki/etcd/peer.key
   - /etc/kubernetes/pki/etcd/healthcheck-client.crt
   - /etc/kubernetes/pki/etcd/healthcheck-client.key
-  - /etc/kubernetes/manifests/kube-apiserver.yaml
-  - /etc/kubernetes/manifests/kube-controller-manager.yaml
-  - /etc/kubernetes/manifests/kube-scheduler.yaml
-  - /etc/kubernetes/manifests/etcd.yaml
   - /var/lib/kubelet/config.yaml
-  - /var/lib/kubelet/kubeadm-flags.env
+  - "{{ kubernetes_bootstrap_kubelet_flags_path }}"
   - /var/lib/kubelet/instance-config.yaml
 
+kubernetes_bootstrap_required_state_files: >-
+  {{
+    kubernetes_bootstrap_non_manifest_required_state_files
+    + kubernetes_bootstrap_static_pod_manifest_paths
+  }}
+
 kubernetes_bootstrap_required_state_directories:
+  - "{{ kubernetes_bootstrap_static_pod_manifest_directory }}"
   - "{{ kubernetes_bootstrap_etcd_member_path }}"
 
 kubernetes_bootstrap_required_state_paths: >-
@@ -126,11 +158,13 @@ kubernetes_bootstrap_private_key_paths:
   - /etc/kubernetes/pki/etcd/peer.key
   - /etc/kubernetes/pki/etcd/healthcheck-client.key
 
-kubernetes_bootstrap_static_pod_components:
-  - etcd
-  - kube-apiserver
-  - kube-controller-manager
-  - kube-scheduler
+kubernetes_bootstrap_required_healthy_node_conditions:
+  - MemoryPressure
+  - DiskPressure
+  - PIDPressure
+
+kubernetes_bootstrap_required_node_condition_types: >-
+  {{ kubernetes_bootstrap_required_healthy_node_conditions + ['Ready'] }}
 
 kubernetes_bootstrap_required_leases:
   - name: kube-controller-manager

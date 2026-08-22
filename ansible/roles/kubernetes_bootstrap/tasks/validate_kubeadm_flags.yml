@@ -1,0 +1,51 @@
+---
+- name: Validate kubeadm-generated kubelet arguments
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - |
+        import pathlib
+        import shlex
+        import sys
+
+        path = pathlib.Path(sys.argv[1])
+        expected_node_ip_argument = f"--node-ip={sys.argv[2]}"
+
+        try:
+            content = path.read_text(encoding="utf-8")
+            assignments = shlex.split(content, comments=False, posix=True)
+        except (OSError, UnicodeError, ValueError) as error:
+            raise SystemExit(f"cannot parse {path}: {error}") from error
+
+        if len(assignments) != 1:
+            raise SystemExit(
+                f"{path} must contain exactly one environment assignment"
+            )
+
+        name, separator, value = assignments[0].partition("=")
+        if separator != "=" or name != "KUBELET_KUBEADM_ARGS":
+            raise SystemExit(
+                f"{path} must assign exactly KUBELET_KUBEADM_ARGS"
+            )
+
+        try:
+            arguments = shlex.split(value, comments=False, posix=True)
+        except ValueError as error:
+            raise SystemExit(
+                f"cannot parse KUBELET_KUBEADM_ARGS in {path}: {error}"
+            ) from error
+
+        node_ip_arguments = [
+            argument
+            for argument in arguments
+            if argument == "--node-ip" or argument.startswith("--node-ip=")
+        ]
+        if node_ip_arguments != [expected_node_ip_argument]:
+            raise SystemExit(
+                f"expected exactly {expected_node_ip_argument!r}; "
+                f"found {node_ip_arguments!r}"
+            )
+      - "{{ kubernetes_bootstrap_kubelet_flags_path }}"
+      - "{{ kubernetes_bootstrap_node_ip }}"
+  changed_when: false

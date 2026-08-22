@@ -54,6 +54,15 @@ jobs:
       - name: Test bootstrap state classification
         run: ansible-playbook tests/bootstrap-state.yml
 
+      - name: Test kubeadm kubelet argument validation
+        run: ansible-playbook tests/kubeadm-flags.yml
+
+      - name: Test Kubernetes Node condition validation
+        run: ansible-playbook tests/node-conditions.yml
+
+      - name: Test static Pod manifest security validation
+        run: ansible-playbook tests/static-manifest-boundary.yml
+
       - name: Download the pinned kubeadm test binary
         run: |
           kubernetes_version="$(python -c 'import yaml; print(yaml.safe_load(open("roles/kubernetes/defaults/main.yml"))["kubernetes_version"])')"
