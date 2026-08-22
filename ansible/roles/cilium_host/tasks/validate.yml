@@ -1,0 +1,222 @@
+---
+- name: Require an architecture supported by this Cilium host role
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.architecture in ["x86_64", "amd64"]
+    fail_msg: >-
+      The Cilium host role supports this project's amd64 architecture only.
+      Detected {{ ansible_facts.architecture }}.
+
+- name: Extract the running kernel version
+  ansible.builtin.set_fact:
+    cilium_host_running_kernel_version: >-
+      {{ ansible_kernel | regex_search('^[0-9]+(?:\.[0-9]+){1,2}') }}
+
+- name: Require a Cilium-supported kernel version
+  ansible.builtin.assert:
+    that:
+      - cilium_host_running_kernel_version is not none
+      - >-
+        cilium_host_running_kernel_version
+        is version(cilium_host_minimum_kernel_version, '>=')
+    fail_msg: >-
+      Cilium requires Linux {{ cilium_host_minimum_kernel_version }} or newer.
+      The running kernel is {{ ansible_kernel }}.
+
+- name: Inspect the configuration for the running kernel
+  ansible.builtin.stat:
+    path: "/boot/config-{{ ansible_kernel }}"
+  register: cilium_host_kernel_config_file
+
+- name: Require the running kernel configuration
+  ansible.builtin.assert:
+    that:
+      - cilium_host_kernel_config_file.stat.exists
+      - cilium_host_kernel_config_file.stat.isreg | default(false)
+    fail_msg: >-
+      Cannot validate Cilium kernel capabilities because the configuration for
+      the running kernel is not available at /boot/config-{{ ansible_kernel }}.
+
+- name: Read the running kernel configuration
+  ansible.builtin.slurp:
+    src: "/boot/config-{{ ansible_kernel }}"
+  register: cilium_host_kernel_config_file_content
+
+- name: Decode the running kernel configuration
+  ansible.builtin.set_fact:
+    cilium_host_running_kernel_config: >-
+      {{ cilium_host_kernel_config_file_content.content | b64decode }}
+
+- name: Require documented Cilium kernel capabilities
+  ansible.builtin.assert:
+    that:
+      - >-
+        cilium_host_running_kernel_config
+        is search('(?m)^' ~ item.name ~ '=[ym]$')
+    fail_msg: >-
+      The running kernel lacks {{ item.name }}, which Cilium requires for
+      {{ item.purpose }}. Install and boot a kernel that provides this
+      capability.
+  loop: "{{ cilium_host_required_kernel_options }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Inspect required loadable kernel modules
+  ansible.builtin.command:
+    argv:
+      - /sbin/modinfo
+      - --field
+      - filename
+      - "{{ item.module }}"
+  when: >-
+    cilium_host_running_kernel_config
+    is search('(?m)^' ~ item.option ~ '=m$')
+  loop: "{{ cilium_host_modules_by_kernel_option }}"
+  loop_control:
+    label: "{{ item.module }}"
+  register: cilium_host_module_inspection
+  changed_when: false
+  failed_when: false
+
+- name: Require modules built for the running kernel
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout | trim | length > 0
+    fail_msg: >-
+      The running kernel declares {{ item.item.option }} as a module, but
+      {{ item.item.module }} is not available. Install the matching kernel
+      modules package before deploying Cilium.
+  when: not (item.skipped | default(false))
+  loop: "{{ cilium_host_module_inspection.results }}"
+  loop_control:
+    label: "{{ item.item.module }}"
+
+- name: Inspect cgroup v2 controllers
+  ansible.builtin.stat:
+    path: /sys/fs/cgroup/cgroup.controllers
+  register: cilium_host_cgroup_v2_controllers
+
+- name: Inspect running-kernel BTF
+  ansible.builtin.stat:
+    path: /sys/kernel/btf/vmlinux
+  register: cilium_host_kernel_btf
+
+- name: Read supported kernel filesystems
+  ansible.builtin.slurp:
+    src: /proc/filesystems
+  register: cilium_host_filesystems_file
+
+- name: Read the current mount table
+  ansible.builtin.slurp:
+    src: /proc/self/mountinfo
+  register: cilium_host_mountinfo_file
+
+- name: Read active IPv4 forwarding
+  ansible.builtin.slurp:
+    src: /proc/sys/net/ipv4/ip_forward
+  register: cilium_host_ipv4_forwarding_file
+
+- name: Decode runtime kernel state
+  ansible.builtin.set_fact:
+    cilium_host_filesystems: >-
+      {{ cilium_host_filesystems_file.content | b64decode }}
+    cilium_host_mountinfo: >-
+      {{ cilium_host_mountinfo_file.content | b64decode }}
+    cilium_host_ipv4_forwarding: >-
+      {{ cilium_host_ipv4_forwarding_file.content | b64decode | trim }}
+
+- name: Probe the BPF system call with a temporary map
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - |
+        import ctypes
+        import os
+        import struct
+        import sys
+
+        bpf_map_create = 0
+        bpf_map_type_array = 2
+        syscall_bpf_amd64 = 321
+        attr = struct.pack("=IIIII", bpf_map_type_array, 4, 8, 1, 0)
+        attr += bytes(120 - len(attr))
+        attr_buffer = ctypes.create_string_buffer(attr)
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.syscall.restype = ctypes.c_long
+        fd = libc.syscall(
+            syscall_bpf_amd64,
+            bpf_map_create,
+            ctypes.byref(attr_buffer),
+            len(attr),
+        )
+        if fd < 0:
+            error_number = ctypes.get_errno()
+            print(
+                "bpf(BPF_MAP_CREATE) failed: " + os.strerror(error_number),
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        os.close(fd)
+  register: cilium_host_bpf_syscall_probe
+  changed_when: false
+  failed_when: false
+
+- name: Require an active cgroup v2 hierarchy
+  ansible.builtin.assert:
+    that:
+      - cilium_host_cgroup_v2_controllers.stat.exists
+      - cilium_host_cgroup_v2_controllers.stat.isreg | default(false)
+      - >-
+        cilium_host_mountinfo
+        is search('(?m)^[^\n]* /sys/fs/cgroup [^\n]* - cgroup2 ')
+      - >-
+        cilium_host_filesystems
+        is search('(?m)^[ \t]*nodev[ \t]+cgroup2$')
+    fail_msg: >-
+      Cilium requires an active cgroup v2 hierarchy at /sys/fs/cgroup, but the
+      running host did not expose one.
+
+- name: Require running-kernel BTF
+  ansible.builtin.assert:
+    that:
+      - cilium_host_kernel_btf.stat.exists
+      - cilium_host_kernel_btf.stat.isreg | default(false)
+      - cilium_host_kernel_btf.stat.size | default(0) | int > 0
+    fail_msg: >-
+      Cilium requires BTF metadata from the running kernel, but
+      /sys/kernel/btf/vmlinux is not a non-empty regular file.
+
+- name: Require bpffs support and a valid existing mount
+  ansible.builtin.assert:
+    that:
+      - >-
+        cilium_host_filesystems
+        is search('(?m)^[ \t]*nodev[ \t]+bpf$')
+      - >-
+        cilium_host_mountinfo
+        is not search('(?m)^[^\n]* /sys/fs/bpf [^\n]* - (?!bpf )')
+    fail_msg: >-
+      The running kernel must support bpffs, and any existing /sys/fs/bpf
+      mount must use the bpf filesystem. Cilium will create the mount later
+      when bpf.autoMount.enabled is left at its default value.
+
+- name: Require a usable BPF system call
+  ansible.builtin.assert:
+    that:
+      - cilium_host_bpf_syscall_probe.rc == 0
+    fail_msg: |-
+      Cilium requires permission to create eBPF maps, but a direct
+      bpf(BPF_MAP_CREATE) probe failed.
+
+      Probe stderr:
+      {{ cilium_host_bpf_syscall_probe.stderr }}
+
+- name: Require active IPv4 forwarding
+  ansible.builtin.assert:
+    that:
+      - cilium_host_ipv4_forwarding == "1"
+    fail_msg: >-
+      Cilium's IPv4 datapath requires net.ipv4.ip_forward=1. The base role owns
+      that setting, but it is not active in the running kernel.

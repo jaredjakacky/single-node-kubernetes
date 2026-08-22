@@ -1,0 +1,73 @@
+---
+cilium_host_minimum_kernel_version: "5.10"
+
+# Cilium 1.20 base requirements plus the requirements for the selected
+# tunneling/routing datapath and default iptables-based masquerading mode.
+cilium_host_required_kernel_options:
+  - name: CONFIG_BPF
+    purpose: core eBPF support
+  - name: CONFIG_BPF_EVENTS
+    purpose: eBPF perf-event integration
+  - name: CONFIG_BPF_SYSCALL
+    purpose: the bpf system call
+  - name: CONFIG_NET_CLS_BPF
+    purpose: tc eBPF classifiers
+  - name: CONFIG_BPF_JIT
+    purpose: eBPF JIT compilation
+  - name: CONFIG_NET_CLS_ACT
+    purpose: tc direct-action support
+  - name: CONFIG_NET_SCH_INGRESS
+    purpose: tc ingress attachment
+  - name: CONFIG_DEBUG_INFO_BTF
+    purpose: kernel BTF metadata
+  - name: CONFIG_CRYPTO_SHA1
+    purpose: Cilium's base cryptographic support
+  - name: CONFIG_CRYPTO_USER_API_HASH
+    purpose: Cilium's base userspace hashing API
+  - name: CONFIG_CGROUPS
+    purpose: cgroup support
+  - name: CONFIG_CGROUP_BPF
+    purpose: cgroup eBPF attachment
+  - name: CONFIG_PERF_EVENTS
+    purpose: eBPF perf events
+  - name: CONFIG_SCHEDSTATS
+    purpose: scheduler statistics used by Cilium
+  - name: CONFIG_VXLAN
+    purpose: the default Cilium tunnel protocol
+  - name: CONFIG_GENEVE
+    purpose: Cilium tunnel protocol support
+  - name: CONFIG_FIB_RULES
+    purpose: policy routing
+  - name: CONFIG_NETFILTER_XT_SET
+    purpose: iptables-based masquerading with IP sets
+  - name: CONFIG_IP_SET
+    purpose: iptables-based masquerading with IP sets
+  - name: CONFIG_IP_SET_HASH_IP
+    purpose: hashed IP sets for iptables-based masquerading
+  - name: CONFIG_NETFILTER_XT_MATCH_COMMENT
+    purpose: Cilium-managed iptables rule comments
+
+# If one of the documented options is modular, the matching module must be
+# available for the running kernel. It need not be preloaded: the kernel and
+# the privileged Cilium agent can load it when the feature is first used.
+cilium_host_modules_by_kernel_option:
+  - option: CONFIG_NET_CLS_BPF
+    module: cls_bpf
+  - option: CONFIG_NET_SCH_INGRESS
+    module: sch_ingress
+  - option: CONFIG_CRYPTO_SHA1
+    module: sha1_generic
+  - option: CONFIG_CRYPTO_USER_API_HASH
+    module: algif_hash
+  - option: CONFIG_VXLAN
+    module: vxlan
+  - option: CONFIG_GENEVE
+    module: geneve
+  - option: CONFIG_NETFILTER_XT_SET
+    module: xt_set
+  - option: CONFIG_IP_SET
+    module: ip_set
+  - option: CONFIG_IP_SET_HASH_IP
+    module: ip_set_hash_ip
+  - option: CONFIG_NETFILTER_XT_MATCH_COMMENT
+    module: xt_comment

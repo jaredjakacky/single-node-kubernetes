@@ -6,5 +6,6 @@
 
   roles:
     - role: base
+    - role: cilium_host
     - role: containerd
     - role: kubernetes
