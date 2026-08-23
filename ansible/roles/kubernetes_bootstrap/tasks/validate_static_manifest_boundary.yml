@@ -1,4 +1,7 @@
 ---
+- name: Validate the optional kubelet package baseline
+  ansible.builtin.import_tasks: inspect_package_baseline.yml
+
 - name: Inspect the static Pod manifest security boundary
   ansible.builtin.import_tasks: inspect_static_manifest_boundary.yml
 
@@ -8,6 +11,7 @@
       - kubernetes_bootstrap_static_pod_manifest_missing_paths | length == 0
       - kubernetes_bootstrap_static_pod_manifest_invalid_paths | length == 0
       - kubernetes_bootstrap_static_pod_manifest_unexpected_paths | length == 0
+      - kubernetes_bootstrap_invalid_package_baseline_paths | length == 0
     fail_msg: |-
       The kubelet static Pod manifest boundary is not secure and complete.
       Missing paths:
@@ -16,6 +20,8 @@
       {{ kubernetes_bootstrap_static_pod_manifest_invalid_paths | to_nice_yaml(indent=2) }}
       Unexpected paths:
       {{ kubernetes_bootstrap_static_pod_manifest_unexpected_paths | to_nice_yaml(indent=2) }}
+      Invalid package baseline paths:
+      {{ kubernetes_bootstrap_invalid_package_baseline_paths | to_nice_yaml(indent=2) }}
 
       The bootstrap role will not change permissions, ownership, or remove
       unexpected static Pod definitions automatically.

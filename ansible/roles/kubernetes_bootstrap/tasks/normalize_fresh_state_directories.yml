@@ -1,0 +1,53 @@
+---
+- name: Require proven-fresh state before directory normalization
+  ansible.builtin.assert:
+    that:
+      - kubernetes_bootstrap_state == 'fresh'
+      - kubernetes_bootstrap_meaningful_state_paths | length == 0
+      - kubernetes_bootstrap_invalid_package_baseline_paths | length == 0
+      - kubernetes_bootstrap_invalid_fresh_state_directory_paths | length == 0
+    fail_msg: >-
+      Refusing to normalize Kubernetes directories because the host is not a
+      conclusively fresh package-baseline state.
+
+- name: Snapshot validated package baseline paths before normalization
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_pre_normalization_package_baseline_paths: >-
+      {{ kubernetes_bootstrap_validated_package_baseline_paths }}
+
+- name: Normalize proven-fresh Kubernetes state directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner_uid }}"
+    group: "{{ item.owner_gid }}"
+    mode: "{{ item.mode }}"
+    follow: false
+  loop: "{{ kubernetes_bootstrap_fresh_state_directories }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Redetect state after fresh-directory normalization
+  ansible.builtin.import_tasks: detect.yml
+
+- name: Require the normalized pre-bootstrap filesystem contract
+  ansible.builtin.assert:
+    that:
+      - kubernetes_bootstrap_state == 'fresh'
+      - kubernetes_bootstrap_meaningful_state_paths | length == 0
+      - kubernetes_bootstrap_invalid_package_baseline_paths | length == 0
+      - kubernetes_bootstrap_invalid_fresh_state_directory_paths | length == 0
+      - >-
+        kubernetes_bootstrap_validated_package_baseline_paths
+        == kubernetes_bootstrap_pre_normalization_package_baseline_paths
+      - item.stat.isdir | default(false)
+      - not (item.stat.islnk | default(false))
+      - item.stat.uid | default(-1) | int == item.item.owner_uid | int
+      - item.stat.gid | default(-1) | int == item.item.owner_gid | int
+      - item.stat.mode | default('') == item.item.mode
+    fail_msg: >-
+      Fresh-state directory normalization did not produce the required
+      pre-bootstrap filesystem boundary. Refusing kubeadm preflight and init.
+  loop: "{{ kubernetes_bootstrap_fresh_state_directory_stats.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"

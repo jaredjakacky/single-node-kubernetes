@@ -2,6 +2,7 @@
 - name: Inspect kubeadm-generated state roots
   ansible.builtin.stat:
     path: "{{ item }}"
+    follow: false
   loop: "{{ kubernetes_bootstrap_state_roots }}"
   register: kubernetes_bootstrap_state_root_stats
 
@@ -15,14 +16,33 @@
   loop: "{{ kubernetes_bootstrap_state_root_stats.results }}"
   loop_control:
     label: "{{ item.item }}"
-  when: item.stat.isdir | default(false)
+  when:
+    - item.stat.isdir | default(false)
+    - not (item.stat.islnk | default(false))
   register: kubernetes_bootstrap_state_root_contents
 
 - name: Inspect expected kubeadm-generated state
   ansible.builtin.stat:
     path: "{{ item }}"
+    follow: false
   loop: "{{ kubernetes_bootstrap_state_evidence_paths }}"
   register: kubernetes_bootstrap_state_files
+  failed_when: false
+
+- name: Inspect optional package baseline ownership and metadata
+  ansible.builtin.import_tasks: inspect_package_baseline.yml
+
+- name: Inspect the static Pod manifest security boundary
+  ansible.builtin.import_tasks: inspect_static_manifest_boundary.yml
+
+- name: Inspect fresh-state directory inputs
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+  loop: "{{ kubernetes_bootstrap_fresh_state_directories }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: kubernetes_bootstrap_fresh_state_directory_stats
   failed_when: false
 
 - name: Inspect local etcd member data
@@ -44,7 +64,7 @@
 
 - name: Initialize bootstrap-state diagnostics
   ansible.builtin.set_fact:
-    kubernetes_bootstrap_present_state_paths: >-
+    kubernetes_bootstrap_observed_state_paths: >-
       {{
         (
           kubernetes_bootstrap_state_root_contents.results
@@ -63,12 +83,32 @@
           | selectattr('stat.exists')
           | map(attribute='item')
           | list
+          + kubernetes_bootstrap_static_pod_manifest_observed_paths
         )
         | unique
         | sort
       }}
     kubernetes_bootstrap_missing_required_state_paths: []
     kubernetes_bootstrap_invalid_required_state_paths: []
+    kubernetes_bootstrap_invalid_fresh_state_directory_paths: []
+
+- name: Record invalid fresh-state directory inputs
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_invalid_fresh_state_directory_paths: >-
+      {{ kubernetes_bootstrap_invalid_fresh_state_directory_paths + [item.item.path] }}
+  when:
+    - item.stat.exists | default(false)
+    - >-
+      not (
+        item.stat.isdir | default(false)
+        and not (item.stat.islnk | default(false))
+        and item.stat.uid | default(-1) | int == item.item.owner_uid | int
+        and item.stat.gid | default(-1) | int == item.item.owner_gid | int
+        and item.stat.mode | default('') in item.item.allowed_prebootstrap_modes
+      )
+  loop: "{{ kubernetes_bootstrap_fresh_state_directory_stats.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
 
 - name: Record missing required kubeadm state
   ansible.builtin.set_fact:
@@ -152,20 +192,26 @@
         and kubernetes_bootstrap_etcd_member_contents.matched | default(0) | int > 0
       )
 
-- name: Inspect the static Pod manifest security boundary
-  ansible.builtin.import_tasks: inspect_static_manifest_boundary.yml
-
-- name: Merge static Pod manifest boundary findings
+- name: Record invalid completed-state directory permissions
   ansible.builtin.set_fact:
-    kubernetes_bootstrap_present_state_paths: >-
-      {{
-        (
-          kubernetes_bootstrap_present_state_paths
-          + kubernetes_bootstrap_static_pod_manifest_unexpected_paths
-        )
-        | unique
-        | sort
-      }}
+    kubernetes_bootstrap_invalid_required_state_paths: >-
+      {{ kubernetes_bootstrap_invalid_required_state_paths + [item.item.path] }}
+  when:
+    - item.stat.exists | default(false)
+    - >-
+      not (
+        item.stat.isdir | default(false)
+        and not (item.stat.islnk | default(false))
+        and item.stat.uid | default(-1) | int == item.item.owner_uid | int
+        and item.stat.gid | default(-1) | int == item.item.owner_gid | int
+        and item.stat.mode | default('') == item.item.mode
+      )
+  loop: "{{ kubernetes_bootstrap_fresh_state_directory_stats.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+
+- name: Merge completed-state security boundary findings
+  ansible.builtin.set_fact:
     kubernetes_bootstrap_missing_required_state_paths: >-
       {{
         (
@@ -181,10 +227,29 @@
           kubernetes_bootstrap_invalid_required_state_paths
           + kubernetes_bootstrap_static_pod_manifest_invalid_paths
           + kubernetes_bootstrap_static_pod_manifest_unexpected_paths
+          + kubernetes_bootstrap_invalid_package_baseline_paths
         )
         | unique
         | sort
       }}
+
+- name: Distinguish observed, package-baseline, and meaningful state paths
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_meaningful_state_paths: >-
+      {{
+        kubernetes_bootstrap_observed_state_paths
+        | difference(kubernetes_bootstrap_validated_package_baseline_paths)
+        | difference(kubernetes_bootstrap_fresh_structural_state_paths)
+        | sort
+      }}
+
+# Retain this compatibility fact for diagnostics and the fresh-bootstrap
+# super-admin.conf assertion. It now means meaningful state, not every observed
+# package artifact.
+- name: Record meaningful state as detected kubeadm state
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_present_state_paths: >-
+      {{ kubernetes_bootstrap_meaningful_state_paths }}
 
 - name: Determine the local bootstrap state
   ansible.builtin.set_fact:
@@ -192,8 +257,9 @@
       {{
         'fresh'
         if
-          kubernetes_bootstrap_present_state_paths | length == 0
-          and kubernetes_bootstrap_invalid_required_state_paths | length == 0
+          kubernetes_bootstrap_meaningful_state_paths | length == 0
+          and kubernetes_bootstrap_invalid_package_baseline_paths | length == 0
+          and kubernetes_bootstrap_invalid_fresh_state_directory_paths | length == 0
         else 'complete'
         if
           kubernetes_bootstrap_missing_required_state_paths | length == 0

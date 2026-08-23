@@ -57,26 +57,40 @@ kubeadm configuration and initializes the cluster. On an initialized host, the
 original input file is left as a historical record while the role validates
 live control-plane state without reinitializing it.
 
-Bootstrap does not use a single file as an idempotence marker. A host is fresh
-only when `/etc/kubernetes`, `/var/lib/etcd`, and `/var/lib/kubelet` contain no
-state. Completeness requires non-empty, correctly typed PKI, kubeconfig, static
-Pod, local etcd, and kubelet state. Authenticated API readiness and live
-control-plane validation then prove health. A complete healthy cluster is
-validated and left unchanged. Any partial local state, an initialized control
-plane whose API does not become ready, or immutable configuration drift causes
-a hard failure. The role never runs `kubeadm reset`, deletes cluster state, or
-retries initialization automatically.
+Bootstrap does not use a single file as an idempotence marker. State detection
+reports all observed paths, separately validates the kubelet package baseline,
+and classifies every remaining path as meaningful kubeadm, kubelet, or etcd
+state. The only optional baseline files are the pinned kubelet package's two
+zero-byte, root-owned `.kubelet-keep` files. Each present file must match its
+exact path, type, ownership, mode, size, dpkg owner, and installed pinned
+package version. Absence is accepted; a malformed file or any other entry is
+not filtered from meaningful state.
+
+A host is fresh only when it has no meaningful state, every present package
+baseline file validates, and its existing state directories are known-safe
+pre-bootstrap inputs. Only then does bootstrap normalize `/etc/kubernetes` to
+`0755` and its `manifests` directory, `/var/lib/kubelet`, and `/var/lib/etcd` to
+`0700`, all root-owned. It redetects state and asserts this contract before
+preflight or `kubeadm init`. Completeness requires non-empty, correctly typed
+PKI, kubeconfig, static Pod, local etcd, and kubelet state. Authenticated API
+readiness and live control-plane validation then prove health. A complete
+healthy cluster is validated and left unchanged. Any partial local state, an
+initialized control plane whose API does not become ready, or immutable
+configuration drift causes a hard failure. The role never normalizes completed
+state, runs `kubeadm reset`, deletes cluster state, or retries initialization
+automatically.
 
 The kubelet static Pod boundary is fail-closed. `/etc/kubernetes` must be a
 root-owned directory that is not writable by group or other users, and
 `/etc/kubernetes/manifests` must be root-owned with mode `0700`. Its direct
 contents must be exactly kubeadm's four expected `etcd`, API server,
-controller-manager, and scheduler manifests. Each manifest must be a non-empty
-root-owned regular file with mode `0600`; symlinks, permission or ownership
-drift, and every unexpected entry—including editor and backup files—are
-rejected. These violations classify existing state as partial. Bootstrap does
-not change their metadata or remove unexpected static Pod definitions
-automatically.
+controller-manager, and scheduler manifests, plus the optional, independently
+validated `/etc/kubernetes/manifests/.kubelet-keep` package file. Each manifest
+must be a non-empty root-owned regular file with mode `0600`; symlinks,
+permission or ownership drift, and every unexpected entry—including every
+other dotfile, editor file, and backup file—are rejected. These violations
+classify existing state as partial. Bootstrap does not change their metadata or
+remove unexpected static Pod definitions automatically.
 
 The role holds an atomic host-local lock under `/run/lock` from initial state
 detection through final validation. This prevents independent Ansible
@@ -171,7 +185,15 @@ ansible-playbook tests/bootstrap-state.yml
 ansible-playbook tests/kubeadm-flags.yml
 ansible-playbook tests/node-conditions.yml
 ansible-playbook tests/static-manifest-boundary.yml
+python tests/verify-kubelet-package-contract.py \
+  --version <pinned-package-version> \
+  /path/to/pinned-kubelet.deb
 ansible-playbook \
   --extra-vars kubernetes_bootstrap_test_kubeadm_path=/path/to/pinned/kubeadm \
   tests/kubeadm-config.yml
 ```
+
+CI runs `tests/bootstrap-state.yml` through the installed Ansible executable
+under `sudo`. This makes the package-baseline fixture literally root-owned and
+reproduces the production uid/gid contract; an unprivileged local invocation
+uses the invoking uid/gid while exercising the same mismatch checks.
