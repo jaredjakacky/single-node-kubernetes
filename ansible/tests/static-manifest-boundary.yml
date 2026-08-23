@@ -13,11 +13,37 @@
 
     - name: Exercise static Pod manifest boundary cases
       block:
+        - name: Create static-boundary package metadata query fixture
+          ansible.builtin.copy:
+            content: |-
+              #!/bin/sh
+              set -eu
+              case "$1" in
+                --show)
+                  printf 'installed\t1.36.4-1.1'
+                  ;;
+                --search)
+                  printf 'kubelet: %s\n' "$2"
+                  ;;
+                *)
+                  exit 1
+                  ;;
+              esac
+            dest: "{{ kubernetes_bootstrap_test_dpkg_query_path }}"
+            mode: "0755"
+
         - name: Validate representative static Pod manifest boundaries
           ansible.builtin.include_tasks: tasks/static-manifest-boundary-case.yml
           loop:
             - name: exact kubeadm permissions and contents
               should_fail: false
+            - name: exact kubeadm contents plus package keep-file
+              package_keep: true
+              should_fail: false
+            - name: nonempty package keep-file
+              package_keep: true
+              package_keep_content: invalid
+              should_fail: true
             - name: group-readable manifest
               manifest_mode: "0640"
               should_fail: true
@@ -47,6 +73,9 @@
               should_fail: true
             - name: unexpected hidden editor file
               unexpected_path: .kube-apiserver.yaml.swp
+              should_fail: true
+            - name: unexpected similarly named kubelet dotfile
+              unexpected_path: .kubelet-other
               should_fail: true
           loop_control:
             loop_var: kubernetes_bootstrap_test_static_manifest_case
@@ -80,3 +109,7 @@
         | map(attribute='path')
         | list
       }}
+    kubernetes_bootstrap_test_manifest_keep_path: >-
+      {{ kubernetes_bootstrap_test_static_manifest_directory }}/.kubelet-keep
+    kubernetes_bootstrap_test_dpkg_query_path: >-
+      {{ kubernetes_bootstrap_test_static_manifest_root.path }}/dpkg-query

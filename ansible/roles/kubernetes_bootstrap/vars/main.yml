@@ -16,6 +16,69 @@ kubernetes_bootstrap_static_pod_manifest_directory_mode: "0700"
 kubernetes_bootstrap_static_pod_manifest_mode: "0600"
 kubernetes_bootstrap_static_pod_manifest_owner_uid: 0
 kubernetes_bootstrap_static_pod_manifest_owner_gid: 0
+kubernetes_bootstrap_dpkg_query_path: /usr/bin/dpkg-query
+kubernetes_bootstrap_expected_kubelet_package_version: >-
+  {{ kubernetes_package_version }}
+
+# The pinned Debian kubelet package uses these exact zero-byte files to retain
+# otherwise-empty state directories. They are optional because dpkg can remove
+# them when a future package changes its payload, but any present file must
+# match the package contract exactly.
+kubernetes_bootstrap_package_baseline_files:
+  - path: "{{ kubernetes_bootstrap_static_pod_manifest_directory }}/.kubelet-keep"
+    package: kubelet
+    owner_uid: 0
+    owner_gid: 0
+    mode: "0644"
+    size: 0
+  - path: /var/lib/kubelet/.kubelet-keep
+    package: kubelet
+    owner_uid: 0
+    owner_gid: 0
+    mode: "0644"
+    size: 0
+
+kubernetes_bootstrap_static_pod_allowed_non_manifest_paths:
+  - "{{ kubernetes_bootstrap_static_pod_manifest_directory }}/.kubelet-keep"
+
+kubernetes_bootstrap_fresh_structural_state_paths:
+  - "{{ kubernetes_bootstrap_static_pod_manifest_directory }}"
+
+# Only a host already classified as fresh may be brought from the package
+# footprint to kubeadm's intended directory contract. The package's 0775
+# directories and previously accepted empty 0755 state roots are explicit
+# pre-bootstrap inputs, not acceptable completed-cluster permissions.
+kubernetes_bootstrap_fresh_state_directories:
+  - path: "{{ kubernetes_bootstrap_kubernetes_directory }}"
+    owner_uid: 0
+    owner_gid: 0
+    mode: "0755"
+    allowed_prebootstrap_modes:
+      - "0755"
+      - "0775"
+  - path: "{{ kubernetes_bootstrap_static_pod_manifest_directory }}"
+    owner_uid: 0
+    owner_gid: 0
+    mode: "0700"
+    allowed_prebootstrap_modes:
+      - "0700"
+      - "0755"
+      - "0775"
+  - path: /var/lib/kubelet
+    owner_uid: 0
+    owner_gid: 0
+    mode: "0700"
+    allowed_prebootstrap_modes:
+      - "0700"
+      - "0755"
+      - "0775"
+  - path: /var/lib/etcd
+    owner_uid: 0
+    owner_gid: 0
+    mode: "0700"
+    allowed_prebootstrap_modes:
+      - "0700"
+      - "0755"
 
 kubernetes_bootstrap_expected_static_pod_manifests:
   - component: etcd
@@ -35,8 +98,9 @@ kubernetes_bootstrap_static_pod_components: >-
 kubernetes_bootstrap_static_pod_manifest_paths: >-
   {{ kubernetes_bootstrap_expected_static_pod_manifests | map(attribute='path') | list }}
 
-# A host is fresh only when these kubeadm and kubelet state roots contain no
-# entries. The desired input file lives separately under /etc/kubeadm.
+# These roots contain both meaningful cluster state and the narrowly validated
+# kubelet package baseline. The desired input file lives separately under
+# /etc/kubeadm.
 kubernetes_bootstrap_state_roots:
   - /etc/kubernetes
   - /var/lib/etcd

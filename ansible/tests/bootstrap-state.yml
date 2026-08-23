@@ -61,6 +61,36 @@
             dest: "{{ kubernetes_bootstrap_test_kubectl_path }}"
             mode: "0755"
 
+        - name: Create a kubelet package metadata query fixture
+          ansible.builtin.copy:
+            content: |-
+              #!/bin/sh
+              set -eu
+              case "$1" in
+                --show)
+                  printf 'installed\t1.36.4-1.1'
+                  ;;
+                --search)
+                  if [ -f "{{ kubernetes_bootstrap_test_wrong_package_owner_marker }}" ]; then
+                    printf 'not-kubelet: %s\n' "$2"
+                    exit 0
+                  fi
+                  case "$2" in
+                    "{{ kubernetes_bootstrap_test_manifest_keep_path }}"|"{{ kubernetes_bootstrap_test_kubelet_keep_path }}")
+                      printf 'kubelet: %s\n' "$2"
+                      ;;
+                    *)
+                      exit 1
+                      ;;
+                  esac
+                  ;;
+                *)
+                  exit 1
+                  ;;
+              esac
+            dest: "{{ kubernetes_bootstrap_test_dpkg_query_path }}"
+            mode: "0755"
+
         - name: Detect a host with absent state roots
           ansible.builtin.include_role:
             name: kubernetes_bootstrap
@@ -81,10 +111,28 @@
               {{ kubernetes_bootstrap_test_static_pod_manifest_directory }}
             kubernetes_bootstrap_static_pod_manifest_paths: >-
               {{ kubernetes_bootstrap_test_static_pod_manifest_paths }}
+            kubernetes_bootstrap_static_pod_allowed_non_manifest_paths:
+              - "{{ kubernetes_bootstrap_test_manifest_keep_path }}"
             kubernetes_bootstrap_static_pod_manifest_owner_uid: >-
               {{ ansible_facts['user_uid'] }}
             kubernetes_bootstrap_static_pod_manifest_owner_gid: >-
               {{ ansible_facts['user_gid'] }}
+            kubernetes_bootstrap_package_baseline_files: >-
+              {{
+                kubernetes_bootstrap_test_active_package_baseline_files
+                | default(kubernetes_bootstrap_test_package_baseline_files)
+              }}
+            kubernetes_bootstrap_dpkg_query_path: >-
+              {{ kubernetes_bootstrap_test_dpkg_query_path }}
+            kubernetes_bootstrap_expected_kubelet_package_version: >-
+              {{
+                kubernetes_bootstrap_test_active_package_version
+                | default('1.36.4-1.1')
+              }}
+            kubernetes_bootstrap_fresh_state_directories: >-
+              {{ kubernetes_bootstrap_test_fresh_state_directories }}
+            kubernetes_bootstrap_fresh_structural_state_paths:
+              - "{{ kubernetes_bootstrap_test_static_pod_manifest_directory }}"
             kubernetes_bootstrap_api_ready_retries: 1
             kubernetes_bootstrap_api_ready_delay: 0
 
@@ -139,10 +187,401 @@
             that:
               - kubernetes_bootstrap_state == 'fresh'
 
-        - name: Make the empty Kubernetes configuration directory writable
+        - name: Reset state roots for the package baseline regression fixture
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: "{{ kubernetes_bootstrap_test_state_roots }}"
+
+        - name: Create package baseline directories with package modes
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            mode: "0775"
+          loop:
+            - "{{ kubernetes_bootstrap_test_kubernetes_directory }}"
+            - "{{ kubernetes_bootstrap_test_static_pod_manifest_directory }}"
+            - "{{ kubernetes_bootstrap_test_root.path }}/var/lib/kubelet"
+
+        - name: Create exact zero-byte package baseline files
+          ansible.builtin.copy:
+            content: ""
+            dest: "{{ item }}"
+            mode: "0644"
+          loop:
+            - "{{ kubernetes_bootstrap_test_manifest_keep_path }}"
+            - "{{ kubernetes_bootstrap_test_kubelet_keep_path }}"
+
+        - name: Detect the real kubelet package baseline
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require the real package baseline to be fresh and explicit
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'fresh'
+              - kubernetes_bootstrap_meaningful_state_paths | length == 0
+              - >-
+                kubernetes_bootstrap_validated_package_baseline_paths | sort
+                == [
+                  kubernetes_bootstrap_test_manifest_keep_path,
+                  kubernetes_bootstrap_test_kubelet_keep_path
+                ] | sort
+              - >-
+                kubernetes_bootstrap_test_manifest_keep_path
+                in kubernetes_bootstrap_observed_state_paths
+              - >-
+                kubernetes_bootstrap_test_kubelet_keep_path
+                in kubernetes_bootstrap_observed_state_paths
+            fail_msg: |-
+              state={{ kubernetes_bootstrap_state }}
+              observed={{ kubernetes_bootstrap_observed_state_paths }}
+              validated={{ kubernetes_bootstrap_validated_package_baseline_paths }}
+              meaningful={{ kubernetes_bootstrap_meaningful_state_paths }}
+              invalid_baseline={{ kubernetes_bootstrap_invalid_package_baseline_paths }}
+              invalid_directories={{ kubernetes_bootstrap_invalid_fresh_state_directory_paths }}
+              package_rc={{ kubernetes_bootstrap_package_baseline_kubelet_package.rc }}
+              package_stdout={{ kubernetes_bootstrap_package_baseline_kubelet_package.stdout | string | to_json }}
+              expected_version=1.36.4-1.1
+              ownership_rcs={{ kubernetes_bootstrap_package_baseline_file_ownership.results | map(attribute='rc') | list }}
+              ownership_stdout={{ kubernetes_bootstrap_package_baseline_file_ownership.results | map(attribute='stdout') | list }}
+              modes={{ kubernetes_bootstrap_package_baseline_file_stats.results | map(attribute='stat.mode') | list }}
+              sizes={{ kubernetes_bootstrap_package_baseline_file_stats.results | map(attribute='stat.size') | list }}
+
+        - name: Normalize the proven-fresh package baseline
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: normalize_fresh_state_directories.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require normalized package baseline directories and files
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'fresh'
+              - kubernetes_bootstrap_meaningful_state_paths | length == 0
+              - >-
+                kubernetes_bootstrap_fresh_state_directory_stats.results
+                | map(attribute='stat.mode')
+                | list
+                == ['0755', '0700', '0700', '0700']
+              - >-
+                kubernetes_bootstrap_validated_package_baseline_paths | sort
+                == [
+                  kubernetes_bootstrap_test_manifest_keep_path,
+                  kubernetes_bootstrap_test_kubelet_keep_path
+                ] | sort
+
+        - name: Make the empty etcd directory permissive on proven-fresh state
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_root.path }}/var/lib/etcd"
+            state: directory
+            mode: "0755"
+
+        - name: Detect a fresh host with an existing permissive etcd directory
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require the empty permissive etcd directory to remain fresh
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'fresh'
+
+        - name: Normalize the existing empty etcd directory on fresh state
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: normalize_fresh_state_directories.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require the existing empty etcd directory to be normalized
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'fresh'
+              - >-
+                (
+                  kubernetes_bootstrap_fresh_state_directory_stats.results
+                  | selectattr(
+                      'item.path',
+                      'equalto',
+                      kubernetes_bootstrap_test_root.path ~ '/var/lib/etcd'
+                    )
+                  | map(attribute='stat.mode')
+                  | first
+                ) == '0700'
+
+        - name: Create an unexpected empty state directory
+          ansible.builtin.file:
+            path: >-
+              {{ kubernetes_bootstrap_test_kubernetes_directory }}/unexpected
+            state: directory
+            mode: "0700"
+
+        - name: Detect an unexpected empty state directory
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require an unexpected empty directory to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+              - >-
+                kubernetes_bootstrap_test_kubernetes_directory ~ '/unexpected'
+                in kubernetes_bootstrap_meaningful_state_paths
+
+        - name: Remove the unexpected empty state directory
+          ansible.builtin.file:
+            path: >-
+              {{ kubernetes_bootstrap_test_kubernetes_directory }}/unexpected
+            state: absent
+
+        - name: Make a package baseline file nonempty
+          ansible.builtin.copy:
+            content: invalid
+            dest: "{{ kubernetes_bootstrap_test_manifest_keep_path }}"
+            mode: "0644"
+
+        - name: Detect a nonempty package baseline file
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require a nonempty package baseline file to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+              - >-
+                kubernetes_bootstrap_test_manifest_keep_path
+                in kubernetes_bootstrap_invalid_package_baseline_paths
+
+        - name: Restore the exact package baseline file
+          ansible.builtin.copy:
+            content: ""
+            dest: "{{ kubernetes_bootstrap_test_manifest_keep_path }}"
+            mode: "0644"
+
+        - name: Give a package baseline file the wrong mode
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_manifest_keep_path }}"
+            mode: "0600"
+
+        - name: Detect a wrong-mode package baseline file
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require a wrong-mode package baseline file to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+
+        - name: Restore the package baseline file mode
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_manifest_keep_path }}"
+            mode: "0644"
+
+        - name: Model wrong package baseline ownership and group
+          ansible.builtin.set_fact:
+            kubernetes_bootstrap_test_active_package_baseline_files:
+              - path: "{{ kubernetes_bootstrap_test_manifest_keep_path }}"
+                package: kubelet
+                owner_uid: "{{ ansible_facts['user_uid'] | int + 1 }}"
+                owner_gid: "{{ ansible_facts['user_gid'] | int + 1 }}"
+                mode: "0644"
+                size: 0
+              - path: "{{ kubernetes_bootstrap_test_kubelet_keep_path }}"
+                package: kubelet
+                owner_uid: "{{ ansible_facts['user_uid'] }}"
+                owner_gid: "{{ ansible_facts['user_gid'] }}"
+                mode: "0644"
+                size: 0
+
+        - name: Detect wrong package baseline ownership and group
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require wrong package baseline ownership to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+
+        - name: Restore package baseline ownership expectations
+          ansible.builtin.set_fact:
+            kubernetes_bootstrap_test_active_package_baseline_files: >-
+              {{ kubernetes_bootstrap_test_package_baseline_files }}
+
+        - name: Replace a package baseline file with a symlink
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_manifest_keep_path }}"
+            state: absent
+
+        - name: Create the package baseline symlink fixture
+          ansible.builtin.file:
+            src: "{{ kubernetes_bootstrap_test_kubelet_keep_path }}"
+            dest: "{{ kubernetes_bootstrap_test_manifest_keep_path }}"
+            state: link
+
+        - name: Detect a symlinked package baseline file
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require a symlinked package baseline file to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+
+        - name: Replace the package baseline symlink with a directory
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_manifest_keep_path }}"
+            state: absent
+
+        - name: Create the package baseline directory fixture
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_manifest_keep_path }}"
+            state: directory
+            mode: "0644"
+
+        - name: Detect a directory in place of a package baseline file
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require a package baseline directory to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+
+        - name: Restore the package baseline file after type tests
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_manifest_keep_path }}"
+            state: absent
+
+        - name: Recreate the exact package baseline file after type tests
+          ansible.builtin.copy:
+            content: ""
+            dest: "{{ kubernetes_bootstrap_test_manifest_keep_path }}"
+            mode: "0644"
+
+        - name: Simulate wrong dpkg ownership for package baseline files
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_wrong_package_owner_marker }}"
+            state: touch
+            mode: "0600"
+
+        - name: Detect wrong dpkg package ownership
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require wrong dpkg ownership to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+
+        - name: Restore dpkg package ownership fixture
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_wrong_package_owner_marker }}"
+            state: absent
+
+        - name: Model an installed kubelet version mismatch
+          ansible.builtin.set_fact:
+            kubernetes_bootstrap_test_active_package_version: 1.36.5-1.1
+
+        - name: Detect a kubelet package version mismatch
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require a kubelet package version mismatch to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+              - >-
+                kubernetes_bootstrap_invalid_package_baseline_paths | length
+                == 2
+
+        - name: Restore the expected kubelet package version
+          ansible.builtin.set_fact:
+            kubernetes_bootstrap_test_active_package_version: 1.36.4-1.1
+
+        - name: Add incomplete real kubeadm state to the package baseline
+          ansible.builtin.copy:
+            content: incomplete
+            dest: >-
+              {{ kubernetes_bootstrap_test_kubernetes_directory }}/admin.conf
+            mode: "0600"
+
+        - name: Give the partial-state kubelet directory a package-safe mode
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_root.path }}/var/lib/kubelet"
+            mode: "0775"
+
+        - name: Detect package baseline plus incomplete kubeadm state
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require baseline plus incomplete kubeadm state to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+              - >-
+                kubernetes_bootstrap_test_kubernetes_directory ~ '/admin.conf'
+                in kubernetes_bootstrap_meaningful_state_paths
+
+        - name: Initialize partial-state normalization refusal result
+          ansible.builtin.set_fact:
+            kubernetes_bootstrap_test_partial_normalization_refused: false
+
+        - name: Attempt normalization against partial state
+          block:
+            - name: Invoke normalization against partial state
+              ansible.builtin.include_role:
+                name: kubernetes_bootstrap
+                tasks_from: normalize_fresh_state_directories.yml
+              vars: *bootstrap_state_test_vars
+          rescue:
+            - name: Record partial-state normalization refusal
+              ansible.builtin.set_fact:
+                kubernetes_bootstrap_test_partial_normalization_refused: true
+
+        - name: Inspect the refused partial-state kubelet directory
+          ansible.builtin.stat:
+            path: "{{ kubernetes_bootstrap_test_root.path }}/var/lib/kubelet"
+          register: kubernetes_bootstrap_test_refused_partial_kubelet_directory
+
+        - name: Require partial-state normalization refusal without mutation
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_test_partial_normalization_refused
+              - >-
+                kubernetes_bootstrap_test_refused_partial_kubelet_directory.stat.mode
+                == '0775'
+
+        - name: Remove incomplete kubeadm state after baseline tests
+          ansible.builtin.file:
+            path: >-
+              {{ kubernetes_bootstrap_test_kubernetes_directory }}/admin.conf
+            state: absent
+
+        - name: Make the empty Kubernetes configuration directory world-writable
           ansible.builtin.file:
             path: "{{ kubernetes_bootstrap_test_kubernetes_directory }}"
-            mode: "0775"
+            mode: "0777"
 
         - name: Detect an insecure empty Kubernetes configuration directory
           ansible.builtin.include_role:
@@ -209,6 +648,14 @@
               )
             }}
 
+        - name: Apply completed-state directory permissions
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            mode: "{{ item.mode }}"
+          loop: "{{ kubernetes_bootstrap_test_fresh_state_directories }}"
+          loop_control:
+            label: "{{ item.path }}"
+
         - name: Create complete required state files
           ansible.builtin.copy:
             content: valid-state
@@ -227,6 +674,15 @@
             dest: "{{ kubernetes_bootstrap_test_etcd_member_path }}/member-data"
             mode: "0600"
 
+        - name: Add valid package baseline files to complete state
+          ansible.builtin.copy:
+            content: ""
+            dest: "{{ item }}"
+            mode: "0644"
+          loop:
+            - "{{ kubernetes_bootstrap_test_manifest_keep_path }}"
+            - "{{ kubernetes_bootstrap_test_kubelet_keep_path }}"
+
         - name: Detect complete state with a successful API
           ansible.builtin.include_role:
             name: kubernetes_bootstrap
@@ -237,6 +693,41 @@
           ansible.builtin.assert:
             that:
               - kubernetes_bootstrap_state == 'healthy'
+              - >-
+                kubernetes_bootstrap_validated_package_baseline_paths | length
+                == 2
+
+        - name: Repeat detection of healthy state with package baseline files
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require repeated healthy package-baseline detection
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'healthy'
+
+        - name: Initialize healthy-state normalization refusal result
+          ansible.builtin.set_fact:
+            kubernetes_bootstrap_test_healthy_normalization_refused: false
+
+        - name: Attempt normalization against healthy state
+          block:
+            - name: Invoke normalization against healthy state
+              ansible.builtin.include_role:
+                name: kubernetes_bootstrap
+                tasks_from: normalize_fresh_state_directories.yml
+              vars: *bootstrap_state_test_vars
+          rescue:
+            - name: Record healthy-state normalization refusal
+              ansible.builtin.set_fact:
+                kubernetes_bootstrap_test_healthy_normalization_refused: true
+
+        - name: Require healthy-state normalization refusal
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_test_healthy_normalization_refused
 
         - name: Make an expected static Pod manifest group-readable
           ansible.builtin.file:
@@ -261,6 +752,30 @@
           ansible.builtin.file:
             path: "{{ kubernetes_bootstrap_test_static_pod_manifest_paths | first }}"
             mode: "0600"
+
+        - name: Create an arbitrary hidden static Pod directory entry
+          ansible.builtin.copy:
+            content: unexpected-hidden-state
+            dest: >-
+              {{ kubernetes_bootstrap_test_static_pod_manifest_directory }}/.unexpected
+            mode: "0600"
+
+        - name: Detect an arbitrary hidden static Pod directory entry
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require arbitrary hidden static Pod state to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+
+        - name: Remove the arbitrary hidden static Pod directory entry
+          ansible.builtin.file:
+            path: >-
+              {{ kubernetes_bootstrap_test_static_pod_manifest_directory }}/.unexpected
+            state: absent
 
         - name: Create an unexpected static Pod manifest backup
           ansible.builtin.copy:
@@ -293,7 +808,7 @@
         - name: Make the static Pod manifest directory permissive
           ansible.builtin.file:
             path: "{{ kubernetes_bootstrap_test_static_pod_manifest_directory }}"
-            mode: "0755"
+            mode: "0775"
 
         - name: Detect insecure static Pod manifest directory permissions
           ansible.builtin.include_role:
@@ -308,6 +823,35 @@
               - >-
                 kubernetes_bootstrap_test_static_pod_manifest_directory
                 in kubernetes_bootstrap_invalid_required_state_paths
+
+        - name: Initialize completed-state normalization refusal result
+          ansible.builtin.set_fact:
+            kubernetes_bootstrap_test_completed_normalization_refused: false
+
+        - name: Attempt normalization against insecure completed state
+          block:
+            - name: Invoke normalization against insecure completed state
+              ansible.builtin.include_role:
+                name: kubernetes_bootstrap
+                tasks_from: normalize_fresh_state_directories.yml
+              vars: *bootstrap_state_test_vars
+          rescue:
+            - name: Record completed-state normalization refusal
+              ansible.builtin.set_fact:
+                kubernetes_bootstrap_test_completed_normalization_refused: true
+
+        - name: Inspect refused completed-state manifest directory
+          ansible.builtin.stat:
+            path: "{{ kubernetes_bootstrap_test_static_pod_manifest_directory }}"
+          register: kubernetes_bootstrap_test_refused_completed_manifest_directory
+
+        - name: Require completed-state normalization refusal without mutation
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_test_completed_normalization_refused
+              - >-
+                kubernetes_bootstrap_test_refused_completed_manifest_directory.stat.mode
+                == '0775'
 
         - name: Restore the static Pod manifest directory permissions
           ansible.builtin.file:
@@ -385,6 +929,27 @@
             that:
               - kubernetes_bootstrap_state == 'unhealthy'
 
+        - name: Initialize unhealthy-state normalization refusal result
+          ansible.builtin.set_fact:
+            kubernetes_bootstrap_test_unhealthy_normalization_refused: false
+
+        - name: Attempt normalization against unhealthy state
+          block:
+            - name: Invoke normalization against unhealthy state
+              ansible.builtin.include_role:
+                name: kubernetes_bootstrap
+                tasks_from: normalize_fresh_state_directories.yml
+              vars: *bootstrap_state_test_vars
+          rescue:
+            - name: Record unhealthy-state normalization refusal
+              ansible.builtin.set_fact:
+                kubernetes_bootstrap_test_unhealthy_normalization_refused: true
+
+        - name: Require unhealthy-state normalization refusal
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_test_unhealthy_normalization_refused
+
         - name: Create a ready static Pod probe fixture
           ansible.builtin.copy:
             content: |-
@@ -452,6 +1017,44 @@
       {{ kubernetes_bootstrap_test_kubernetes_directory }}/manifests
     kubernetes_bootstrap_test_static_pod_manifest_paths:
       - "{{ kubernetes_bootstrap_test_static_pod_manifest_directory }}/kube-apiserver.yaml"
+    kubernetes_bootstrap_test_manifest_keep_path: >-
+      {{ kubernetes_bootstrap_test_static_pod_manifest_directory }}/.kubelet-keep
+    kubernetes_bootstrap_test_kubelet_keep_path: >-
+      {{ kubernetes_bootstrap_test_root.path }}/var/lib/kubelet/.kubelet-keep
+    kubernetes_bootstrap_test_package_baseline_files:
+      - path: "{{ kubernetes_bootstrap_test_manifest_keep_path }}"
+        package: kubelet
+        owner_uid: "{{ ansible_facts['user_uid'] }}"
+        owner_gid: "{{ ansible_facts['user_gid'] }}"
+        mode: "0644"
+        size: 0
+      - path: "{{ kubernetes_bootstrap_test_kubelet_keep_path }}"
+        package: kubelet
+        owner_uid: "{{ ansible_facts['user_uid'] }}"
+        owner_gid: "{{ ansible_facts['user_gid'] }}"
+        mode: "0644"
+        size: 0
+    kubernetes_bootstrap_test_fresh_state_directories:
+      - path: "{{ kubernetes_bootstrap_test_kubernetes_directory }}"
+        owner_uid: "{{ ansible_facts['user_uid'] }}"
+        owner_gid: "{{ ansible_facts['user_gid'] }}"
+        mode: "0755"
+        allowed_prebootstrap_modes: ["0755", "0775"]
+      - path: "{{ kubernetes_bootstrap_test_static_pod_manifest_directory }}"
+        owner_uid: "{{ ansible_facts['user_uid'] }}"
+        owner_gid: "{{ ansible_facts['user_gid'] }}"
+        mode: "0700"
+        allowed_prebootstrap_modes: ["0700", "0755", "0775"]
+      - path: "{{ kubernetes_bootstrap_test_root.path }}/var/lib/kubelet"
+        owner_uid: "{{ ansible_facts['user_uid'] }}"
+        owner_gid: "{{ ansible_facts['user_gid'] }}"
+        mode: "0700"
+        allowed_prebootstrap_modes: ["0700", "0755", "0775"]
+      - path: "{{ kubernetes_bootstrap_test_root.path }}/var/lib/etcd"
+        owner_uid: "{{ ansible_facts['user_uid'] }}"
+        owner_gid: "{{ ansible_facts['user_gid'] }}"
+        mode: "0700"
+        allowed_prebootstrap_modes: ["0700", "0755"]
     kubernetes_bootstrap_test_required_files:
       - "{{ kubernetes_bootstrap_test_root.path }}/etc/kubernetes/admin.conf"
       - "{{ kubernetes_bootstrap_test_static_pod_manifest_paths | first }}"
@@ -472,5 +1075,9 @@
       - "{{ kubernetes_bootstrap_test_root.path }}/etc/kubernetes/bootstrap-kubelet.conf"
     kubernetes_bootstrap_test_kubectl_path: >-
       {{ kubernetes_bootstrap_test_root.path }}/kubectl
+    kubernetes_bootstrap_test_dpkg_query_path: >-
+      {{ kubernetes_bootstrap_test_root.path }}/dpkg-query
+    kubernetes_bootstrap_test_wrong_package_owner_marker: >-
+      {{ kubernetes_bootstrap_test_root.path }}/wrong-package-owner
     kubernetes_bootstrap_test_lock_directory: >-
       {{ kubernetes_bootstrap_test_root.path }}/bootstrap.lock

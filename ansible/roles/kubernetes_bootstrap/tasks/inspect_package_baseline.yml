@@ -1,0 +1,124 @@
+---
+- name: Inspect optional kubelet package baseline files
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+  loop: "{{ kubernetes_bootstrap_package_baseline_files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: kubernetes_bootstrap_package_baseline_file_stats
+  failed_when: false
+
+- name: Record whether package baseline files are present
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_package_baseline_files_present: >-
+      {{
+        kubernetes_bootstrap_package_baseline_file_stats.results
+        | selectattr('stat.exists', 'defined')
+        | selectattr('stat.exists')
+        | list
+        | length > 0
+      }}
+
+- name: Read the installed kubelet package version for baseline validation
+  ansible.builtin.command:
+    argv:
+      - "{{ kubernetes_bootstrap_dpkg_query_path }}"
+      - --show
+      - '--showformat=${db:Status-Status}\t${Version}'
+      - kubelet
+  register: kubernetes_bootstrap_package_baseline_kubelet_package
+  changed_when: false
+  failed_when: false
+  when: kubernetes_bootstrap_package_baseline_files_present
+
+- name: Read package ownership for optional kubelet baseline paths
+  ansible.builtin.command:
+    argv:
+      - "{{ kubernetes_bootstrap_dpkg_query_path }}"
+      - --search
+      - "{{ item.item.path }}"
+  loop: "{{ kubernetes_bootstrap_package_baseline_file_stats.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+  register: kubernetes_bootstrap_package_baseline_file_ownership
+  changed_when: false
+  failed_when: false
+  when: item.stat.exists | default(false)
+
+- name: Initialize package baseline findings
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_validated_package_baseline_paths: []
+    kubernetes_bootstrap_invalid_package_baseline_paths: []
+
+- name: Classify present package baseline files
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_validated_package_baseline_paths: >-
+      {{
+        kubernetes_bootstrap_validated_package_baseline_paths
+        + ([item.item.path] if kubernetes_bootstrap_package_baseline_file_valid else [])
+      }}
+    kubernetes_bootstrap_invalid_package_baseline_paths: >-
+      {{
+        kubernetes_bootstrap_invalid_package_baseline_paths
+        + ([item.item.path] if not kubernetes_bootstrap_package_baseline_file_valid else [])
+      }}
+  vars:
+    kubernetes_bootstrap_package_baseline_ownership: >-
+      {{ kubernetes_bootstrap_package_baseline_file_ownership.results[baseline_index] }}
+    kubernetes_bootstrap_package_baseline_file_checks:
+      - "{{ item.stat.isreg | default(false) }}"
+      - "{{ not (item.stat.islnk | default(false)) }}"
+      - >-
+        {{ (item.stat.uid | default(-1) | int) == (item.item.owner_uid | int) }}
+      - >-
+        {{ (item.stat.gid | default(-1) | int) == (item.item.owner_gid | int) }}
+      - "{{ (item.stat.mode | default('')) == item.item.mode }}"
+      - >-
+        {{ (item.stat.size | default(-1) | int) == (item.item.size | int) }}
+      - >-
+        {{
+          (
+            kubernetes_bootstrap_package_baseline_kubelet_package.rc
+            | default(1)
+            | int
+          ) == 0
+        }}
+      - >-
+        {{
+          (
+            kubernetes_bootstrap_package_baseline_kubelet_package.stdout
+            | default('')
+          ).split() == [
+            'installed',
+            kubernetes_bootstrap_expected_kubelet_package_version
+          ]
+        }}
+      - >-
+        {{
+          (
+            kubernetes_bootstrap_package_baseline_ownership.rc
+            | default(1)
+            | int
+          ) == 0
+        }}
+      - >-
+        {{
+          (
+            kubernetes_bootstrap_package_baseline_ownership.stdout_lines
+            | default([])
+          ) == [item.item.package ~ ': ' ~ item.item.path]
+        }}
+    kubernetes_bootstrap_package_baseline_file_valid: >-
+      {{
+        kubernetes_bootstrap_package_baseline_file_checks
+        | select('equalto', false)
+        | list
+        | length
+        == 0
+      }}
+  loop: "{{ kubernetes_bootstrap_package_baseline_file_stats.results }}"
+  loop_control:
+    index_var: baseline_index
+    label: "{{ item.item.path }}"
+  when: item.stat.exists | default(false)

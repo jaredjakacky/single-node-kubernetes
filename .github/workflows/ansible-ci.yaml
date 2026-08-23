@@ -51,8 +51,8 @@ jobs:
             --syntax-check \
             playbooks/bootstrap.yml
 
-      - name: Test bootstrap state classification
-        run: ansible-playbook tests/bootstrap-state.yml
+      - name: Test bootstrap state classification as root
+        run: sudo "$(command -v ansible-playbook)" tests/bootstrap-state.yml
 
       - name: Test kubeadm kubelet argument validation
         run: ansible-playbook tests/kubeadm-flags.yml
@@ -62,6 +62,30 @@ jobs:
 
       - name: Test static Pod manifest security validation
         run: ansible-playbook tests/static-manifest-boundary.yml
+
+      - name: Verify the pinned kubelet Debian package contract
+        run: |
+          kubernetes_version="$(python -c '
+          import yaml
+          with open("roles/kubernetes/defaults/main.yml") as stream:
+              print(yaml.safe_load(stream)["kubernetes_version"])
+          ')"
+          kubernetes_package_version="$(KUBERNETES_VERSION="${kubernetes_version}" python -c '
+          import os
+          import yaml
+          with open("roles/kubernetes/defaults/main.yml") as stream:
+              value = yaml.safe_load(stream)["kubernetes_package_version"]
+          print(value.replace("{{ kubernetes_version }}", os.environ["KUBERNETES_VERSION"]))
+          ')"
+          kubernetes_minor="${kubernetes_version%.*}"
+          package_path="/tmp/kubelet_${kubernetes_package_version}_amd64.deb"
+          package_url="https://pkgs.k8s.io/core:/stable:/v${kubernetes_minor}/deb/amd64"
+          curl --fail --location --silent --show-error \
+            --output "${package_path}" \
+            "${package_url}/kubelet_${kubernetes_package_version}_amd64.deb"
+          python tests/verify-kubelet-package-contract.py \
+            --version "${kubernetes_package_version}" \
+            "${package_path}"
 
       - name: Download the pinned kubeadm test binary
         run: |
