@@ -10,6 +10,26 @@ import tarfile
 
 AR_MAGIC = b"!<arch>\n"
 AR_HEADER_SIZE = 60
+BOOTSTRAP_RELEVANT_ROOTS = (
+    "etc/kubernetes",
+    "var/lib/kubelet",
+    "var/lib/etcd",
+)
+EXPECTED_RELEVANT_MEMBERS = {
+    "etc/kubernetes": {"mode": 0o775, "kind": "directory"},
+    "etc/kubernetes/manifests": {"mode": 0o775, "kind": "directory"},
+    "etc/kubernetes/manifests/.kubelet-keep": {
+        "mode": 0o644,
+        "kind": "file",
+        "size": 0,
+    },
+    "var/lib/kubelet": {"mode": 0o775, "kind": "directory"},
+    "var/lib/kubelet/.kubelet-keep": {
+        "mode": 0o644,
+        "kind": "file",
+        "size": 0,
+    },
+}
 
 
 def read_ar_members(path: Path) -> dict[str, bytes]:
@@ -36,7 +56,9 @@ def read_ar_members(path: Path) -> dict[str, bytes]:
 
 def tar_members(data: bytes) -> dict[str, tarfile.TarInfo]:
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
-        return {member.name.removeprefix("./"): member for member in archive}
+        return {
+            member.name.removeprefix("./").lstrip("/"): member for member in archive
+        }
 
 
 def control_fields(data: bytes) -> dict[str, str]:
@@ -88,6 +110,30 @@ def require_member(
         raise ValueError(f"{path} size must be {size}, got {member.size}")
 
 
+def require_exact_relevant_footprint(
+    members: dict[str, tarfile.TarInfo],
+) -> None:
+    actual_paths = {
+        path
+        for path in members
+        if any(
+            path == root or path.startswith(f"{root}/")
+            for root in BOOTSTRAP_RELEVANT_ROOTS
+        )
+    }
+    expected_paths = set(EXPECTED_RELEVANT_MEMBERS)
+    missing_paths = sorted(expected_paths - actual_paths)
+    unexpected_paths = sorted(actual_paths - expected_paths)
+    if missing_paths or unexpected_paths:
+        raise ValueError(
+            "kubelet package bootstrap-relevant footprint mismatch: "
+            f"missing={missing_paths}, unexpected={unexpected_paths}"
+        )
+
+    for path, contract in EXPECTED_RELEVANT_MEMBERS.items():
+        require_member(members, path, **contract)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("package", type=Path)
@@ -115,23 +161,7 @@ def main() -> None:
             )
 
     members = tar_members(ar_members[data_name])
-    require_member(members, "etc/kubernetes", mode=0o775, kind="directory")
-    require_member(members, "etc/kubernetes/manifests", mode=0o775, kind="directory")
-    require_member(
-        members,
-        "etc/kubernetes/manifests/.kubelet-keep",
-        mode=0o644,
-        kind="file",
-        size=0,
-    )
-    require_member(members, "var/lib/kubelet", mode=0o775, kind="directory")
-    require_member(
-        members,
-        "var/lib/kubelet/.kubelet-keep",
-        mode=0o644,
-        kind="file",
-        size=0,
-    )
+    require_exact_relevant_footprint(members)
 
     print(f"validated kubelet Debian package baseline for {args.version}")
 
