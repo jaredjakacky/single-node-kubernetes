@@ -3,6 +3,9 @@
   ansible.builtin.stat:
     path: "{{ item.path }}"
     follow: false
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
   loop: "{{ kubernetes_bootstrap_package_baseline_files }}"
   loop_control:
     label: "{{ item.path }}"

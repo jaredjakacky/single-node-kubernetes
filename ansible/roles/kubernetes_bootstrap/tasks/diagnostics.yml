@@ -54,7 +54,7 @@
 - name: Store protected bootstrap diagnostics on the host
   ansible.builtin.copy:
     content: |-
-      captured_at={{ ansible_date_time.iso8601 }}
+      captured_at={{ ansible_facts['date_time']['iso8601'] }}
       kubelet_state={{ kubernetes_bootstrap_diagnostic_kubelet_state.stdout | default('unknown', true) }}
       containerd_state={{ kubernetes_bootstrap_diagnostic_containerd_state.stdout | default('unknown', true) }}
 

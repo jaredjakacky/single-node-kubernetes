@@ -96,6 +96,19 @@
             - type: PIDPressure
               status: "False"
           should_fail: true
+        - name: duplicate Ready condition
+          conditions:
+            - type: Ready
+              status: "False"
+            - type: Ready
+              status: "False"
+            - type: MemoryPressure
+              status: "False"
+            - type: DiskPressure
+              status: "False"
+            - type: PIDPressure
+              status: "False"
+          should_fail: true
         - name: unknown disk pressure status
           conditions:
             - type: Ready

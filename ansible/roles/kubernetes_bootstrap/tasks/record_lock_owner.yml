@@ -1,0 +1,11 @@
+---
+- name: Record bootstrap lock ownership
+  ansible.builtin.copy:
+    content: |-
+      inventory_host={{ inventory_hostname }}
+      acquired_at={{ ansible_facts['date_time']['iso8601'] }}
+    dest: "{{ kubernetes_bootstrap_lock_directory }}/owner"
+    owner: root
+    group: root
+    mode: "0600"
+  changed_when: false

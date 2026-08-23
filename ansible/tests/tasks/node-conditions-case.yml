@@ -10,10 +10,8 @@
         name: kubernetes_bootstrap
         tasks_from: validate_node_conditions.yml
       vars:
-        kubernetes_bootstrap_live_node:
-          status:
-            conditions: >-
-              {{ kubernetes_bootstrap_test_node_condition_case.conditions }}
+        kubernetes_bootstrap_live_node_conditions: >-
+          {{ kubernetes_bootstrap_test_node_condition_case.conditions }}
   rescue:
     - name: Record rejected Kubernetes Node conditions
       ansible.builtin.set_fact:
