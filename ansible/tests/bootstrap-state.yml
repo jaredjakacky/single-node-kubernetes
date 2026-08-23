@@ -13,6 +13,76 @@
 
     - name: Exercise bootstrap state transitions
       block:
+        - name: Create a bootstrap lock ownership fixture
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_lock_owner_directory }}"
+            state: directory
+            mode: "0700"
+
+        - name: Record bootstrap lock ownership in the fixture
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: record_lock_owner.yml
+          vars:
+            kubernetes_bootstrap_lock_directory: >-
+              {{ kubernetes_bootstrap_test_lock_owner_directory }}
+
+        - name: Read bootstrap lock ownership from the fixture
+          ansible.builtin.slurp:
+            src: "{{ kubernetes_bootstrap_test_lock_owner_directory }}/owner"
+          register: kubernetes_bootstrap_test_lock_owner
+
+        - name: Validate explicit lock ownership facts
+          ansible.builtin.assert:
+            that:
+              - >-
+                kubernetes_bootstrap_test_lock_owner.content
+                | b64decode
+                is search('(?m)^inventory_host=localhost$')
+              - >-
+                kubernetes_bootstrap_test_lock_owner.content
+                | b64decode
+                is search(
+                  '(?m)^acquired_at='
+                  ~ (ansible_facts['date_time']['iso8601'] | regex_escape)
+                  ~ '$'
+                )
+
+        - name: Collect protected diagnostic output in the fixture
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: diagnostics.yml
+          vars:
+            kubernetes_bootstrap_diagnostic_directory: >-
+              {{ kubernetes_bootstrap_test_diagnostic_directory }}
+            kubernetes_bootstrap_diagnostic_log_path: >-
+              {{ kubernetes_bootstrap_test_diagnostic_log_path }}
+
+        - name: Read protected diagnostic output from the fixture
+          ansible.builtin.slurp:
+            src: "{{ kubernetes_bootstrap_test_diagnostic_log_path }}"
+          register: kubernetes_bootstrap_test_diagnostic_log
+
+        - name: Validate explicit diagnostic date-time facts
+          ansible.builtin.assert:
+            that:
+              - >-
+                kubernetes_bootstrap_test_diagnostic_log.content
+                | b64decode
+                is search(
+                  '(?m)^captured_at='
+                  ~ (ansible_facts['date_time']['iso8601'] | regex_escape)
+                  ~ '$'
+                )
+              - >-
+                kubernetes_bootstrap_test_diagnostic_log.content
+                | b64decode
+                is search('(?m)^kubelet_state=')
+              - >-
+                kubernetes_bootstrap_test_diagnostic_log.content
+                | b64decode
+                is search('(?m)^containerd_state=')
+
         - name: Create a competing bootstrap lock fixture
           ansible.builtin.file:
             path: "{{ kubernetes_bootstrap_test_lock_directory }}"
@@ -249,6 +319,23 @@
               ownership_stdout={{ kubernetes_bootstrap_package_baseline_file_ownership.results | map(attribute='stdout') | list }}
               modes={{ kubernetes_bootstrap_package_baseline_file_stats.results | map(attribute='stat.mode') | list }}
               sizes={{ kubernetes_bootstrap_package_baseline_file_stats.results | map(attribute='stat.size') | list }}
+
+        - name: Require minimal package baseline file metadata
+          ansible.builtin.assert:
+            that:
+              - item.stat.isreg
+              - not item.stat.islnk
+              - item.stat.uid is defined
+              - item.stat.gid is defined
+              - item.stat.mode is defined
+              - item.stat.size is defined
+              - item.stat.checksum is not defined
+              - item.stat.mimetype is not defined
+              - item.stat.charset is not defined
+              - item.stat.attributes is not defined
+          loop: "{{ kubernetes_bootstrap_package_baseline_file_stats.results }}"
+          loop_control:
+            label: "{{ item.item.path }}"
 
         - name: Normalize the proven-fresh package baseline
           ansible.builtin.include_role:
@@ -954,7 +1041,7 @@
           ansible.builtin.copy:
             content: |-
               #!/bin/sh
-              echo '{"status":{"phase":"Running","containerStatuses":[{"ready":true}]}}'
+              printf 'Running\ttest-control-plane=true\n'
               exit 0
             dest: "{{ kubernetes_bootstrap_test_kubectl_path }}"
             mode: "0755"
@@ -975,7 +1062,7 @@
           ansible.builtin.copy:
             content: |-
               #!/bin/sh
-              echo '{"status":{"phase":"Running","containerStatuses":[{"ready":false}]}}'
+              printf 'Running\ttest-control-plane=false\n'
               exit 0
             dest: "{{ kubernetes_bootstrap_test_kubectl_path }}"
             mode: "0755"
@@ -1081,3 +1168,9 @@
       {{ kubernetes_bootstrap_test_root.path }}/wrong-package-owner
     kubernetes_bootstrap_test_lock_directory: >-
       {{ kubernetes_bootstrap_test_root.path }}/bootstrap.lock
+    kubernetes_bootstrap_test_lock_owner_directory: >-
+      {{ kubernetes_bootstrap_test_root.path }}/owner-test.lock
+    kubernetes_bootstrap_test_diagnostic_directory: >-
+      {{ kubernetes_bootstrap_test_root.path }}/diagnostics
+    kubernetes_bootstrap_test_diagnostic_log_path: >-
+      {{ kubernetes_bootstrap_test_diagnostic_directory }}/bootstrap.log

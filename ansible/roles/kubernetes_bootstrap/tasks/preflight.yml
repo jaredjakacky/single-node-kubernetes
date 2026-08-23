@@ -11,6 +11,9 @@
 - name: Inspect the cgroup v2 controllers file
   ansible.builtin.stat:
     path: /sys/fs/cgroup/cgroup.controllers
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
   register: kubernetes_bootstrap_cgroup_v2_controllers
 
 - name: Read active IPv4 forwarding
@@ -49,6 +52,9 @@
 - name: Inspect the containerd socket
   ansible.builtin.stat:
     path: /run/containerd/containerd.sock
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
   register: kubernetes_bootstrap_containerd_socket
 
 - name: Inspect loaded containerd plugins

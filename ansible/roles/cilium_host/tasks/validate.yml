@@ -26,6 +26,9 @@
 - name: Inspect the configuration for the running kernel
   ansible.builtin.stat:
     path: "/boot/config-{{ ansible_facts['kernel'] }}"
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
   register: cilium_host_kernel_config_file
 
 - name: Require the running kernel configuration
@@ -95,11 +98,17 @@
 - name: Inspect cgroup v2 controllers
   ansible.builtin.stat:
     path: /sys/fs/cgroup/cgroup.controllers
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
   register: cilium_host_cgroup_v2_controllers
 
 - name: Inspect running-kernel BTF
   ansible.builtin.stat:
     path: /sys/kernel/btf/vmlinux
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
   register: cilium_host_kernel_btf
 
 - name: Read supported kernel filesystems

@@ -9,7 +9,8 @@
       - get
       - pod
       - "{{ item }}-{{ kubernetes_bootstrap_node_name }}"
-      - --output=json
+      - >-
+        --output=jsonpath={.status.phase}{"\t"}{range .status.containerStatuses[*]}{.name}{"="}{.ready}{"\n"}{end}
   loop: "{{ kubernetes_bootstrap_static_pod_components }}"
   loop_control:
     label: "{{ item }}"
@@ -17,28 +18,8 @@
   changed_when: false
   until: >-
     kubernetes_bootstrap_static_pods.rc == 0
-    and (
-      kubernetes_bootstrap_static_pods.stdout
-      | default('{}', true)
-      | from_json
-    ).get('status', {}).get('phase') == 'Running'
-    and (
-      (
-        kubernetes_bootstrap_static_pods.stdout
-        | default('{}', true)
-        | from_json
-      ).get('status', {}).get('containerStatuses', [])
-      | length
-    ) > 0
-    and (
-      (
-        kubernetes_bootstrap_static_pods.stdout
-        | default('{}', true)
-        | from_json
-      ).get('status', {}).get('containerStatuses', [])
-      | rejectattr('ready', 'equalto', true)
-      | list
-      | length
-    ) == 0
+    and kubernetes_bootstrap_static_pods.stdout is match('^Running\t')
+    and kubernetes_bootstrap_static_pods.stdout is search('(?m)=true$')
+    and kubernetes_bootstrap_static_pods.stdout is not search('(?m)=false$')
   retries: "{{ kubernetes_bootstrap_control_plane_ready_retries }}"
   delay: "{{ kubernetes_bootstrap_control_plane_ready_delay }}"

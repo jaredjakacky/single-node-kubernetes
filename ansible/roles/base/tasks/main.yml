@@ -28,6 +28,9 @@
 - name: Check for the cgroup v2 controllers file
   ansible.builtin.stat:
     path: /sys/fs/cgroup/cgroup.controllers
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
   register: base_cgroup_v2_controllers
 
 - name: Require cgroup v2
@@ -53,6 +56,9 @@
 - name: Check whether the overlay module is loaded
   ansible.builtin.stat:
     path: /sys/module/overlay
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
   register: base_overlay_module
 
 - name: Load the overlay module

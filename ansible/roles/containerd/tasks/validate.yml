@@ -36,6 +36,9 @@
 - name: Inspect the containerd socket
   ansible.builtin.stat:
     path: /run/containerd/containerd.sock
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
   register: containerd_socket
 
 - name: Inspect loaded containerd plugins

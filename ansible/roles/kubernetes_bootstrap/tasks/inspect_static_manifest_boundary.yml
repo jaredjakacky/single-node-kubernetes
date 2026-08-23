@@ -3,12 +3,18 @@
   ansible.builtin.stat:
     path: "{{ kubernetes_bootstrap_kubernetes_directory }}"
     follow: false
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
   register: kubernetes_bootstrap_kubernetes_directory_stat
 
 - name: Inspect the static Pod manifest directory
   ansible.builtin.stat:
     path: "{{ kubernetes_bootstrap_static_pod_manifest_directory }}"
     follow: false
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
   register: kubernetes_bootstrap_static_pod_manifest_directory_stat
   failed_when: false
 
@@ -16,6 +22,9 @@
   ansible.builtin.stat:
     path: "{{ item }}"
     follow: false
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
   loop: "{{ kubernetes_bootstrap_static_pod_manifest_paths }}"
   loop_control:
     label: "{{ item }}"

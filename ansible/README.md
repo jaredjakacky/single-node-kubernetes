@@ -4,6 +4,16 @@ Terraform provisions the Hetzner infrastructure. Ansible configures the Linux
 operating system after the machine has been provisioned. Terraform does not run
 Ansible, and Ansible does not manage cloud resources.
 
+The Ansible controller runs the repository-pinned `ansible-core` with its own
+Python runtime; CI currently selects Python 3.14 for that controller. Managed
+nodes have a separate runtime contract: they are Debian 13 systems whose base
+image already provides the Debian system Python interface at `/usr/bin/python3`.
+`ansible.cfg` selects that stable interface explicitly rather than coupling the
+inventory to Debian's current Python minor version. The base role remains the
+authority that rejects any managed-node operating system other than Debian 13.
+Implicit fact injection is disabled, and roles access gathered facts only
+through `ansible_facts` so CI exercises the forward-compatible Ansible behavior.
+
 `playbooks/node.yml` configures a Kubernetes node. It applies `roles/base` for
 the common Debian host configuration, `roles/cilium_host` for Cilium host
 prerequisite validation, `roles/containerd` for the container runtime, and
@@ -112,11 +122,13 @@ own Pod CIDR allocation, so the kubeadm configuration deliberately omits
 `networking.podSubnet`. The future Cilium deployment must explicitly choose a
 non-overlapping IPv4 pool rather than accept Cilium's broad default. Until the
 CNI is installed, the Node may be `NotReady` and CoreDNS may be unavailable;
-neither condition is treated as a bootstrap failure. Bootstrap still requires
-the Node to report a current `Ready` condition and requires `MemoryPressure`,
-`DiskPressure`, and `PIDPressure` to be `False`. It deliberately does not
+neither condition is treated as a bootstrap failure. Bootstrap requires exactly
+one determinate Node `Ready` condition, accepting either `True` or `False`, and
+requires `MemoryPressure`, `DiskPressure`, and `PIDPressure` to be `False`. It
+does not claim heartbeat freshness or `Ready=True`, and it deliberately does not
 validate `NetworkUnavailable`; network readiness belongs to the Cilium
-lifecycle.
+lifecycle. Bootstrap validation therefore establishes a healthy kubeadm
+control-plane boundary, not a CNI-complete or workload-ready cluster.
 
 Run the lifecycle in order:
 

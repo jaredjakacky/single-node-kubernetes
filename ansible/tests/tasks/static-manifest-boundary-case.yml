@@ -143,6 +143,24 @@
       ansible.builtin.set_fact:
         kubernetes_bootstrap_test_static_manifest_failed: true
 
+- name: Require minimal static Pod manifest file metadata
+  ansible.builtin.assert:
+    that:
+      - item.stat.isreg
+      - not item.stat.islnk
+      - item.stat.uid is defined
+      - item.stat.gid is defined
+      - item.stat.mode is defined
+      - item.stat.size is defined
+      - item.stat.checksum is not defined
+      - item.stat.mimetype is not defined
+      - item.stat.charset is not defined
+      - item.stat.attributes is not defined
+  loop: "{{ kubernetes_bootstrap_static_pod_manifest_file_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not kubernetes_bootstrap_test_static_manifest_case.should_fail
+
 - name: Require the expected static Pod manifest boundary result
   ansible.builtin.assert:
     that:

@@ -10,7 +10,34 @@
   register: kubernetes_bootstrap_server_version
   changed_when: false
 
-- name: Read the initialized Node object
+- name: Wait for required Kubernetes Node condition types
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - node
+      - "{{ kubernetes_bootstrap_node_name }}"
+      - >-
+        --output=jsonpath={range .status.conditions[*]}{.type}{"\n"}{end}
+  register: kubernetes_bootstrap_node_condition_types
+  changed_when: false
+  until:
+    - kubernetes_bootstrap_node_condition_types.rc == 0
+    - >-
+      (
+        kubernetes_bootstrap_required_node_condition_types
+        | difference(
+          kubernetes_bootstrap_node_condition_types.stdout_lines
+          | default([])
+        )
+        | length
+      ) == 0
+  retries: "{{ kubernetes_bootstrap_control_plane_ready_retries }}"
+  delay: "{{ kubernetes_bootstrap_control_plane_ready_delay }}"
+
+- name: Read the initialized Kubernetes Node object
   ansible.builtin.command:
     argv:
       - /usr/bin/kubectl
@@ -22,24 +49,54 @@
       - --output=json
   register: kubernetes_bootstrap_node
   changed_when: false
-  until:
-    - kubernetes_bootstrap_node.rc == 0
-    - >-
-      (
-        kubernetes_bootstrap_required_node_condition_types
-        | difference(
-          (
-            kubernetes_bootstrap_node.stdout
-            | default('{}', true)
-            | from_json
-          ).get('status', {}).get('conditions', [])
-          | map(attribute='type')
-          | list
+  no_log: true
+
+- name: Derive required Kubernetes Node validation state
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_live_node_name: >-
+      {{ (kubernetes_bootstrap_node.stdout | from_json).metadata.name }}
+    kubernetes_bootstrap_live_node_has_control_plane_label: >-
+      {{
+        'node-role.kubernetes.io/control-plane'
+        in (
+          (kubernetes_bootstrap_node.stdout | from_json).metadata.labels
+          | default({})
         )
-        | length
-      ) == 0
-  retries: "{{ kubernetes_bootstrap_control_plane_ready_retries }}"
-  delay: "{{ kubernetes_bootstrap_control_plane_ready_delay }}"
+      }}
+    kubernetes_bootstrap_live_node_internal_ips: >-
+      {{
+        (kubernetes_bootstrap_node.stdout | from_json).status.addresses
+        | selectattr('type', 'equalto', 'InternalIP')
+        | map(attribute='address')
+        | list
+      }}
+    kubernetes_bootstrap_live_node_control_plane_taints: >-
+      {{
+        (kubernetes_bootstrap_node.stdout | from_json).spec.taints
+        | default([])
+        | selectattr('key', 'equalto', 'node-role.kubernetes.io/control-plane')
+        | list
+      }}
+    kubernetes_bootstrap_live_node_conditions: >-
+      {{
+        (kubernetes_bootstrap_node.stdout | from_json).status.conditions
+        | selectattr('type', 'in', kubernetes_bootstrap_required_node_condition_types)
+        | list
+      }}
+  no_log: true
+
+- name: Require the kubeadm cluster configuration object
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - --namespace=kube-system
+      - get
+      - configmap
+      - kubeadm-config
+      - --output=name
+  changed_when: false
 
 - name: Read the kubeadm cluster configuration
   ansible.builtin.command:
@@ -51,21 +108,16 @@
       - get
       - configmap
       - kubeadm-config
-      - --output=json
+      - --output=jsonpath={.data.ClusterConfiguration}
   register: kubernetes_bootstrap_kubeadm_configmap
   changed_when: false
+  no_log: true
 
 - name: Decode live Kubernetes bootstrap configuration
   ansible.builtin.set_fact:
-    kubernetes_bootstrap_live_node: "{{ kubernetes_bootstrap_node.stdout | from_json }}"
     kubernetes_bootstrap_live_cluster_configuration: >-
-      {{
-        (
-          kubernetes_bootstrap_kubeadm_configmap.stdout
-          | from_json
-        ).data.ClusterConfiguration
-        | from_yaml
-      }}
+      {{ kubernetes_bootstrap_kubeadm_configmap.stdout | from_yaml }}
+  no_log: true
 
 - name: Validate Kubernetes Node conditions
   ansible.builtin.import_tasks: validate_node_conditions.yml
@@ -83,7 +135,8 @@
       - get
       - lease
       - "{{ item.name }}"
-      - --output=json
+      - >-
+        --output=jsonpath={.spec.holderIdentity}{"\t"}{.spec.renewTime}{"\t"}{.spec.leaseDurationSeconds}
   loop: "{{ kubernetes_bootstrap_required_leases }}"
   loop_control:
     label: "{{ item.namespace }}/{{ item.name }}"
@@ -100,14 +153,12 @@
       - -c
       - |
         import datetime
-        import json
         import sys
 
-        lease = json.loads(sys.argv[1])
-        spec = lease.get("spec", {})
-        holder = spec.get("holderIdentity")
-        renewed = spec.get("renewTime")
-        duration = spec.get("leaseDurationSeconds")
+        fields = sys.argv[1].split("\t")
+        if len(fields) != 3:
+            raise SystemExit("lease projection did not contain exactly three fields")
+        holder, renewed, duration = fields
         if not holder or not renewed or not duration:
             raise SystemExit("lease has no active holder, renewal, or duration")
         renewal_time = datetime.datetime.fromisoformat(renewed.replace("Z", "+00:00"))
@@ -133,7 +184,7 @@
       - get
       - daemonset
       - kube-proxy
-      - --output=json
+      - --output=name
   register: kubernetes_bootstrap_kube_proxy
   changed_when: false
 
@@ -147,74 +198,98 @@
       - get
       - deployment
       - coredns
-      - --output=json
+      - --output=name
   register: kubernetes_bootstrap_coredns
   changed_when: false
 
 - name: Validate the static Pod manifest security boundary
   ansible.builtin.import_tasks: validate_static_manifest_boundary.yml
 
-- name: Read control-plane static Pod manifests
+- name: Read control-plane static Pod manifest for {{ item }}
   ansible.builtin.slurp:
     src: "{{ kubernetes_bootstrap_static_pod_manifest_directory }}/{{ item }}.yaml"
   loop: "{{ kubernetes_bootstrap_static_pod_components }}"
   loop_control:
     label: "{{ item }}"
   register: kubernetes_bootstrap_static_pod_manifests
+  no_log: true
+
+- name: Initialize static Pod manifest invariants
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_static_pod_manifest_invariants: []
+
+- name: Derive static Pod manifest invariants for {{ item.item }}
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_static_pod_manifest_invariants: >-
+      {{
+        kubernetes_bootstrap_static_pod_manifest_invariants
+        + [
+          {
+            'component': item.item,
+            'api_version': (item.content | b64decode | from_yaml).apiVersion,
+            'kind': (item.content | b64decode | from_yaml).kind,
+            'name': (item.content | b64decode | from_yaml).metadata.name,
+            'matching_container_count': (
+              (item.content | b64decode | from_yaml).spec.containers
+              | selectattr('name', 'equalto', item.item)
+              | list
+              | length
+            )
+          }
+        ]
+      }}
+  loop: "{{ kubernetes_bootstrap_static_pod_manifests.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  no_log: true
 
 - name: Require valid control-plane static Pod manifests
   ansible.builtin.assert:
     that:
-      - (item.content | b64decode | from_yaml).apiVersion == 'v1'
-      - (item.content | b64decode | from_yaml).kind == 'Pod'
-      - (item.content | b64decode | from_yaml).metadata.name == item.item
-      - >-
-        (
-          (item.content | b64decode | from_yaml).spec.containers
-          | selectattr('name', 'equalto', item.item)
-          | list
-          | length
-        ) == 1
+      - item.api_version == 'v1'
+      - item.kind == 'Pod'
+      - item.name == item.component
+      - item.matching_container_count == 1
     fail_msg: >-
-      {{ kubernetes_bootstrap_static_pod_manifest_directory }}/{{ item.item }}.yaml is not the expected
+      {{ kubernetes_bootstrap_static_pod_manifest_directory }}/{{ item.component }}.yaml is not the expected
       non-empty static Pod manifest.
-  loop: "{{ kubernetes_bootstrap_static_pod_manifests.results }}"
+  loop: "{{ kubernetes_bootstrap_static_pod_manifest_invariants }}"
   loop_control:
-    label: "{{ item.item }}"
-
-- name: Select the API server static Pod manifest
-  ansible.builtin.set_fact:
-    kubernetes_bootstrap_api_server_manifest: >-
-      {{
-        kubernetes_bootstrap_static_pod_manifests.results
-        | selectattr('item', 'equalto', 'kube-apiserver')
-        | map(attribute='content')
-        | first
-        | b64decode
-        | from_yaml
-      }}
+    label: "{{ item.component }}"
 
 - name: Select the API server advertise-address arguments
   ansible.builtin.set_fact:
     kubernetes_bootstrap_api_server_advertise_arguments: >-
       {{
-        kubernetes_bootstrap_api_server_manifest.spec.containers
-        | selectattr('name', 'equalto', 'kube-apiserver')
-        | map(attribute='command')
-        | first
+        (
+          (
+            kubernetes_bootstrap_static_pod_manifests.results
+            | selectattr('item', 'equalto', 'kube-apiserver')
+            | map(attribute='content')
+            | first
+            | b64decode
+            | from_yaml
+          ).spec.containers
+          | selectattr('name', 'equalto', 'kube-apiserver')
+          | map(attribute='command')
+          | first
+        )
         | select('match', '^--advertise-address(?:=|$)')
         | list
       }}
+  no_log: true
 
 - name: Read the live kubelet configuration
   ansible.builtin.slurp:
     src: /var/lib/kubelet/config.yaml
   register: kubernetes_bootstrap_kubelet_configuration_file
+  no_log: true
 
 - name: Read the kubelet instance configuration
   ansible.builtin.slurp:
     src: /var/lib/kubelet/instance-config.yaml
   register: kubernetes_bootstrap_kubelet_instance_configuration_file
+  no_log: true
 
 - name: Validate the effective kubeadm kubelet flags
   ansible.builtin.import_tasks: validate_kubeadm_flags.yml
@@ -222,6 +297,9 @@
 - name: Inspect privileged kubeconfig files
   ansible.builtin.stat:
     path: "{{ item }}"
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
   loop: "{{ kubernetes_bootstrap_privileged_kubeconfig_paths }}"
   register: kubernetes_bootstrap_privileged_kubeconfigs
 
@@ -245,6 +323,9 @@
 - name: Inspect kubeadm-managed private keys
   ansible.builtin.stat:
     path: "{{ item }}"
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
   loop: "{{ kubernetes_bootstrap_private_key_paths }}"
   register: kubernetes_bootstrap_private_keys
 
@@ -267,33 +348,32 @@
   ansible.builtin.assert:
     that:
       - >-
-        (
-          kubernetes_bootstrap_live_node.spec.taints
-          | default([])
-          | selectattr('key', 'equalto', 'node-role.kubernetes.io/control-plane')
-          | list
-          | length
-        ) == 0
+        kubernetes_bootstrap_live_node_control_plane_taints | length == 0
     fail_msg: >-
       The freshly initialized Node retained the control-plane NoSchedule taint,
       but this single-node cluster was configured with nodeRegistration.taints
       set to an empty list.
   when: kubernetes_bootstrap_was_fresh
 
-- name: Decode kubelet configuration
+- name: Derive required kubelet configuration state
   ansible.builtin.set_fact:
-    kubernetes_bootstrap_live_kubelet_configuration: >-
+    kubernetes_bootstrap_live_kubelet_cgroup_driver: >-
       {{
-        kubernetes_bootstrap_kubelet_configuration_file.content
-        | b64decode
-        | from_yaml
+        (
+          kubernetes_bootstrap_kubelet_configuration_file.content
+          | b64decode
+          | from_yaml
+        ).cgroupDriver
       }}
-    kubernetes_bootstrap_live_kubelet_instance_configuration: >-
+    kubernetes_bootstrap_live_kubelet_runtime_endpoint: >-
       {{
-        kubernetes_bootstrap_kubelet_instance_configuration_file.content
-        | b64decode
-        | from_yaml
+        (
+          kubernetes_bootstrap_kubelet_instance_configuration_file.content
+          | b64decode
+          | from_yaml
+        ).containerRuntimeEndpoint
       }}
+  no_log: true
 
 - name: Check whether kubelet is active
   ansible.builtin.command:
@@ -362,18 +442,11 @@
       - >-
         (kubernetes_bootstrap_server_version.stdout | from_json).serverVersion.gitVersion
         == 'v' ~ kubernetes_version
-      - kubernetes_bootstrap_live_node.metadata.name == kubernetes_bootstrap_node_name
-      - >-
-        'node-role.kubernetes.io/control-plane'
-        in kubernetes_bootstrap_live_node.metadata.labels
+      - kubernetes_bootstrap_live_node_name == kubernetes_bootstrap_node_name
+      - kubernetes_bootstrap_live_node_has_control_plane_label
       - >-
         kubernetes_bootstrap_node_ip
-        in (
-          kubernetes_bootstrap_live_node.status.addresses
-          | selectattr('type', 'equalto', 'InternalIP')
-          | map(attribute='address')
-          | list
-        )
+        in kubernetes_bootstrap_live_node_internal_ips
       - >-
         kubernetes_bootstrap_live_cluster_configuration.kubernetesVersion
         == 'v' ~ kubernetes_version
@@ -401,38 +474,37 @@
       - >-
         kubernetes_bootstrap_api_server_advertise_arguments
         == ['--advertise-address=' ~ kubernetes_bootstrap_advertise_address]
-      - kubernetes_bootstrap_live_kubelet_configuration.cgroupDriver == 'systemd'
+      - kubernetes_bootstrap_live_kubelet_cgroup_driver == 'systemd'
       - >-
-        kubernetes_bootstrap_live_kubelet_instance_configuration.containerRuntimeEndpoint
+        kubernetes_bootstrap_live_kubelet_runtime_endpoint
         == kubernetes_bootstrap_cri_socket
       - kubernetes_bootstrap_kubelet_active.stdout | trim == 'active'
       - kubernetes_bootstrap_kubelet_enabled.stdout | trim == 'enabled'
       - >-
         (
           kubernetes_bootstrap_static_pods.results
-          | map(attribute='stdout')
-          | map('from_json')
-          | map(attribute='status.phase')
-          | unique
-          | list
-        ) == ['Running']
-      - >-
-        (
-          kubernetes_bootstrap_static_pods.results
-          | map(attribute='stdout')
-          | map('from_json')
-          | map(attribute='status.containerStatuses')
-          | flatten
-          | rejectattr('ready', 'equalto', true)
+          | rejectattr('stdout', 'match', '^Running\t')
           | list
           | length
         ) == 0
       - >-
-        (kubernetes_bootstrap_kube_proxy.stdout | from_json).metadata.name
-        == 'kube-proxy'
+        (
+          kubernetes_bootstrap_static_pods.results
+          | rejectattr('stdout', 'search', '(?m)=true$')
+          | list
+          | length
+        ) == 0
       - >-
-        (kubernetes_bootstrap_coredns.stdout | from_json).metadata.name
-        == 'coredns'
+        (
+          kubernetes_bootstrap_static_pods.results
+          | selectattr('stdout', 'search', '(?m)=false$')
+          | list
+          | length
+        ) == 0
+      - >-
+        kubernetes_bootstrap_kube_proxy.stdout == 'daemonset.apps/kube-proxy'
+      - >-
+        kubernetes_bootstrap_coredns.stdout == 'deployment.apps/coredns'
     fail_msg: >-
       The initialized control plane does not match the desired immutable
       bootstrap configuration or failed runtime validation. The absence of a

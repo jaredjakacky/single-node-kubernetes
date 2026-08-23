@@ -3,13 +3,13 @@
   ansible.builtin.set_fact:
     kubernetes_bootstrap_node_ready_statuses: >-
       {{
-        kubernetes_bootstrap_live_node.status.conditions
+        kubernetes_bootstrap_live_node_conditions
         | selectattr('type', 'equalto', 'Ready')
         | map(attribute='status')
         | list
       }}
 
-- name: Require a current Kubernetes Node Ready condition
+- name: Require exactly one determinate Kubernetes Node Ready condition
   ansible.builtin.assert:
     that:
       - >-
@@ -32,7 +32,7 @@
   vars:
     kubernetes_bootstrap_node_condition_statuses: >-
       {{
-        kubernetes_bootstrap_live_node.status.conditions
+        kubernetes_bootstrap_live_node_conditions
         | selectattr('type', 'equalto', item)
         | map(attribute='status')
         | list
