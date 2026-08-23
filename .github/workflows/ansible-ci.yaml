@@ -41,8 +41,42 @@ jobs:
         run: ansible-lint
 
       - name: Check playbook syntax
+        run: |
+          ansible-playbook \
+            --inventory inventory/ci.yml \
+            --syntax-check \
+            playbooks/node.yml
+          ansible-playbook \
+            --inventory inventory/ci.yml \
+            --syntax-check \
+            playbooks/bootstrap.yml
+
+      - name: Test bootstrap state classification
+        run: ansible-playbook tests/bootstrap-state.yml
+
+      - name: Test kubeadm kubelet argument validation
+        run: ansible-playbook tests/kubeadm-flags.yml
+
+      - name: Test Kubernetes Node condition validation
+        run: ansible-playbook tests/node-conditions.yml
+
+      - name: Test static Pod manifest security validation
+        run: ansible-playbook tests/static-manifest-boundary.yml
+
+      - name: Download the pinned kubeadm test binary
+        run: |
+          kubernetes_version="$(python -c 'import yaml; print(yaml.safe_load(open("roles/kubernetes/defaults/main.yml"))["kubernetes_version"])')"
+          curl --fail --location --silent --show-error \
+            --output /tmp/kubeadm \
+            "https://dl.k8s.io/release/v${kubernetes_version}/bin/linux/amd64/kubeadm"
+          curl --fail --location --silent --show-error \
+            --output /tmp/kubeadm.sha256 \
+            "https://dl.k8s.io/release/v${kubernetes_version}/bin/linux/amd64/kubeadm.sha256"
+          echo "$(tr -d '\n' < /tmp/kubeadm.sha256)  /tmp/kubeadm" | sha256sum --check
+          chmod 0755 /tmp/kubeadm
+
+      - name: Validate the kubeadm configuration
         run: >-
           ansible-playbook
-          --inventory inventory/ci.yml
-          --syntax-check
-          playbooks/node.yml
+          --extra-vars kubernetes_bootstrap_test_kubeadm_path=/tmp/kubeadm
+          tests/kubeadm-config.yml

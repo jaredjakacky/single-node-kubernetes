@@ -1,0 +1,36 @@
+---
+- name: Write the kubeadm-flags test case
+  ansible.builtin.copy:
+    content: "{{ kubernetes_bootstrap_test_kubelet_flags_case.content }}\n"
+    dest: "{{ kubernetes_bootstrap_test_kubelet_flags_file.path }}"
+    mode: "0600"
+
+- name: Initialize the kubeadm-flags validation result
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_test_kubelet_flags_failed: false
+
+- name: Validate the kubeadm-flags test case
+  block:
+    - name: Invoke kubeadm kubelet argument validation
+      ansible.builtin.include_role:
+        name: kubernetes_bootstrap
+        tasks_from: validate_kubeadm_flags.yml
+      vars:
+        kubernetes_bootstrap_kubelet_flags_path: >-
+          {{ kubernetes_bootstrap_test_kubelet_flags_file.path }}
+        kubernetes_bootstrap_node_ip: >-
+          {{ kubernetes_bootstrap_test_expected_node_ip }}
+  rescue:
+    - name: Record rejected kubeadm kubelet arguments
+      ansible.builtin.set_fact:
+        kubernetes_bootstrap_test_kubelet_flags_failed: true
+
+- name: Require the expected kubeadm-flags result
+  ansible.builtin.assert:
+    that:
+      - >-
+        kubernetes_bootstrap_test_kubelet_flags_failed
+        == kubernetes_bootstrap_test_kubelet_flags_case.should_fail
+    fail_msg: >-
+      Case {{ kubernetes_bootstrap_test_kubelet_flags_case.name }} produced an
+      unexpected validation result.

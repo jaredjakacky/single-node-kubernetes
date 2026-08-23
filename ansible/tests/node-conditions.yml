@@ -1,0 +1,134 @@
+---
+- name: Test Kubernetes Node condition validation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Exercise Kubernetes Node condition cases
+      ansible.builtin.include_tasks: tasks/node-conditions-case.yml
+      loop:
+        - name: pre-CNI Ready false with healthy pressure conditions
+          conditions:
+            - type: Ready
+              status: "False"
+            - type: MemoryPressure
+              status: "False"
+            - type: DiskPressure
+              status: "False"
+            - type: PIDPressure
+              status: "False"
+          should_fail: false
+        - name: post-CNI Ready true with healthy pressure conditions
+          conditions:
+            - type: Ready
+              status: "True"
+            - type: MemoryPressure
+              status: "False"
+            - type: DiskPressure
+              status: "False"
+            - type: PIDPressure
+              status: "False"
+          should_fail: false
+        - name: pre-CNI network unavailable remains outside bootstrap
+          conditions:
+            - type: Ready
+              status: "False"
+            - type: MemoryPressure
+              status: "False"
+            - type: DiskPressure
+              status: "False"
+            - type: PIDPressure
+              status: "False"
+            - type: NetworkUnavailable
+              status: "True"
+          should_fail: false
+        - name: disk pressure
+          conditions:
+            - type: Ready
+              status: "False"
+            - type: MemoryPressure
+              status: "False"
+            - type: DiskPressure
+              status: "True"
+            - type: PIDPressure
+              status: "False"
+          should_fail: true
+        - name: memory pressure
+          conditions:
+            - type: Ready
+              status: "False"
+            - type: MemoryPressure
+              status: "True"
+            - type: DiskPressure
+              status: "False"
+            - type: PIDPressure
+              status: "False"
+          should_fail: true
+        - name: PID pressure
+          conditions:
+            - type: Ready
+              status: "False"
+            - type: MemoryPressure
+              status: "False"
+            - type: DiskPressure
+              status: "False"
+            - type: PIDPressure
+              status: "True"
+          should_fail: true
+        - name: unknown Ready status
+          conditions:
+            - type: Ready
+              status: Unknown
+            - type: MemoryPressure
+              status: "False"
+            - type: DiskPressure
+              status: "False"
+            - type: PIDPressure
+              status: "False"
+          should_fail: true
+        - name: missing Ready condition
+          conditions:
+            - type: MemoryPressure
+              status: "False"
+            - type: DiskPressure
+              status: "False"
+            - type: PIDPressure
+              status: "False"
+          should_fail: true
+        - name: unknown disk pressure status
+          conditions:
+            - type: Ready
+              status: "False"
+            - type: MemoryPressure
+              status: "False"
+            - type: DiskPressure
+              status: Unknown
+            - type: PIDPressure
+              status: "False"
+          should_fail: true
+        - name: missing memory pressure condition
+          conditions:
+            - type: Ready
+              status: "False"
+            - type: DiskPressure
+              status: "False"
+            - type: PIDPressure
+              status: "False"
+          should_fail: true
+        - name: duplicate disk pressure condition
+          conditions:
+            - type: Ready
+              status: "False"
+            - type: MemoryPressure
+              status: "False"
+            - type: DiskPressure
+              status: "False"
+            - type: DiskPressure
+              status: "False"
+            - type: PIDPressure
+              status: "False"
+          should_fail: true
+      loop_control:
+        loop_var: kubernetes_bootstrap_test_node_condition_case
+        label: "{{ kubernetes_bootstrap_test_node_condition_case.name }}"

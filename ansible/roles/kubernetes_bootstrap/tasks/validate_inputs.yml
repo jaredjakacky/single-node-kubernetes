@@ -1,0 +1,100 @@
+---
+- name: Require explicit and valid bootstrap inputs
+  ansible.builtin.assert:
+    that:
+      - kubernetes_version is defined
+      - kubernetes_version | length > 0
+      - kubernetes_bootstrap_advertise_address | length > 0
+      - kubernetes_bootstrap_node_ip | length > 0
+      - kubernetes_bootstrap_control_plane_endpoint | length > 0
+      - >-
+        kubernetes_bootstrap_control_plane_endpoint
+        is match('^[a-z0-9][a-z0-9.-]*:' ~ kubernetes_bootstrap_api_bind_port ~ '$')
+      - >-
+        kubernetes_bootstrap_node_name
+        is match('^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$')
+      - kubernetes_bootstrap_node_name | length <= 253
+      - kubernetes_bootstrap_api_bind_port | int == 6443
+      - kubernetes_bootstrap_cri_socket == 'unix:///run/containerd/containerd.sock'
+      - kubernetes_bootstrap_api_server_cert_sans is sequence
+      - kubernetes_bootstrap_api_server_cert_sans is not string
+      - kubernetes_bootstrap_api_ready_retries | int >= 1
+      - kubernetes_bootstrap_api_ready_delay | int >= 0
+      - kubernetes_bootstrap_control_plane_ready_retries | int >= 1
+      - kubernetes_bootstrap_control_plane_ready_delay | int >= 0
+      - kubernetes_bootstrap_minimum_free_bytes | int > 0
+      - kubernetes_bootstrap_minimum_free_inodes | int > 0
+    fail_msg: >-
+      Bootstrap requires an explicit IPv4 advertise address and a lowercase
+      control-plane endpoint ending in :6443. The node name must be a stable
+      RFC-1123 DNS subdomain. This role supports the repository's containerd
+      socket and API port only.
+
+- name: Validate bootstrap IPv4 addresses and service subnet
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - |
+        import ipaddress
+        import sys
+
+        advertise = ipaddress.ip_address(sys.argv[1])
+        node = ipaddress.ip_address(sys.argv[2])
+        services = ipaddress.ip_network(sys.argv[3], strict=True)
+        if advertise.version != 4 or node.version != 4 or services.version != 4:
+            raise SystemExit("bootstrap networking must be IPv4-only")
+      - "{{ kubernetes_bootstrap_advertise_address }}"
+      - "{{ kubernetes_bootstrap_node_ip }}"
+      - "{{ kubernetes_bootstrap_service_subnet }}"
+  changed_when: false
+
+- name: Require the configured node addresses on this host
+  ansible.builtin.assert:
+    that:
+      - kubernetes_bootstrap_advertise_address in ansible_facts.all_ipv4_addresses
+      - kubernetes_bootstrap_node_ip in ansible_facts.all_ipv4_addresses
+    fail_msg: >-
+      The advertise address and kubelet node IP must be assigned to this host.
+      Host IPv4 addresses are {{ ansible_facts.all_ipv4_addresses }}.
+
+- name: Extract the control-plane endpoint host
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_control_plane_host: >-
+      {{
+        kubernetes_bootstrap_control_plane_endpoint
+        | regex_replace(':' ~ kubernetes_bootstrap_api_bind_port ~ '$', '')
+      }}
+
+- name: Resolve the control-plane endpoint over IPv4
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/getent
+      - ahostsv4
+      - "{{ kubernetes_bootstrap_control_plane_host }}"
+  register: kubernetes_bootstrap_control_plane_resolution
+  changed_when: false
+  failed_when: false
+
+- name: Decode the control-plane endpoint IPv4 addresses
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_control_plane_addresses: >-
+      {{
+        kubernetes_bootstrap_control_plane_resolution.stdout
+        | regex_findall('(?m)^([0-9]+(?:\.[0-9]+){3})[ \t]')
+        | unique
+        | sort
+      }}
+
+- name: Require the endpoint to resolve only to the control-plane host
+  ansible.builtin.assert:
+    that:
+      - kubernetes_bootstrap_control_plane_resolution.rc == 0
+      - >-
+        kubernetes_bootstrap_control_plane_addresses
+        == [kubernetes_bootstrap_advertise_address]
+    fail_msg: >-
+      {{ kubernetes_bootstrap_control_plane_host }} must resolve over IPv4 only
+      to the configured single-node advertise address
+      {{ kubernetes_bootstrap_advertise_address }}. Resolved addresses are
+      {{ kubernetes_bootstrap_control_plane_addresses | default([]) }}.

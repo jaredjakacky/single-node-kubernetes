@@ -1,0 +1,5 @@
+---
+# Derived from the single configurable version source. Role vars prevent
+# inventory from overriding the repository channel independently.
+kubernetes_minor_version: >-
+  {{ kubernetes_version | regex_replace('\.[0-9]+$', '') }}

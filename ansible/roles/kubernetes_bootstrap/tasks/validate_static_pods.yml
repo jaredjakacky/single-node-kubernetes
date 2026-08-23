@@ -1,0 +1,44 @@
+---
+- name: Read ready control-plane static Pod mirror objects
+  ansible.builtin.command:
+    argv:
+      - "{{ kubernetes_bootstrap_kubectl_path }}"
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - --namespace=kube-system
+      - get
+      - pod
+      - "{{ item }}-{{ kubernetes_bootstrap_node_name }}"
+      - --output=json
+  loop: "{{ kubernetes_bootstrap_static_pod_components }}"
+  loop_control:
+    label: "{{ item }}"
+  register: kubernetes_bootstrap_static_pods
+  changed_when: false
+  until: >-
+    kubernetes_bootstrap_static_pods.rc == 0
+    and (
+      kubernetes_bootstrap_static_pods.stdout
+      | default('{}', true)
+      | from_json
+    ).get('status', {}).get('phase') == 'Running'
+    and (
+      (
+        kubernetes_bootstrap_static_pods.stdout
+        | default('{}', true)
+        | from_json
+      ).get('status', {}).get('containerStatuses', [])
+      | length
+    ) > 0
+    and (
+      (
+        kubernetes_bootstrap_static_pods.stdout
+        | default('{}', true)
+        | from_json
+      ).get('status', {}).get('containerStatuses', [])
+      | rejectattr('ready', 'equalto', true)
+      | list
+      | length
+    ) == 0
+  retries: "{{ kubernetes_bootstrap_control_plane_ready_retries }}"
+  delay: "{{ kubernetes_bootstrap_control_plane_ready_delay }}"

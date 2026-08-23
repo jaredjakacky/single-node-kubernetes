@@ -1,0 +1,42 @@
+---
+- name: Select Kubernetes Node Ready condition statuses
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_node_ready_statuses: >-
+      {{
+        kubernetes_bootstrap_live_node.status.conditions
+        | selectattr('type', 'equalto', 'Ready')
+        | map(attribute='status')
+        | list
+      }}
+
+- name: Require a current Kubernetes Node Ready condition
+  ansible.builtin.assert:
+    that:
+      - >-
+        kubernetes_bootstrap_node_ready_statuses
+        in [['True'], ['False']]
+    fail_msg: >-
+      The Kubernetes Node must report exactly one Ready condition with status
+      True or False. Ready=False is expected before Cilium is installed, but a
+      missing, duplicate, or Unknown Ready condition is not accepted. Found
+      statuses: {{ kubernetes_bootstrap_node_ready_statuses }}.
+
+- name: Require healthy Kubernetes Node pressure conditions
+  ansible.builtin.assert:
+    that:
+      - kubernetes_bootstrap_node_condition_statuses == ['False']
+    fail_msg: >-
+      The Kubernetes Node must report exactly one {{ item }} condition with
+      status False. Found statuses:
+      {{ kubernetes_bootstrap_node_condition_statuses }}.
+  vars:
+    kubernetes_bootstrap_node_condition_statuses: >-
+      {{
+        kubernetes_bootstrap_live_node.status.conditions
+        | selectattr('type', 'equalto', item)
+        | map(attribute='status')
+        | list
+      }}
+  loop: "{{ kubernetes_bootstrap_required_healthy_node_conditions }}"
+  loop_control:
+    label: "{{ item }}"

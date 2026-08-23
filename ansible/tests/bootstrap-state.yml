@@ -1,0 +1,476 @@
+---
+- name: Test Kubernetes bootstrap state classification
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  tasks:
+    - name: Create an isolated bootstrap-state test root
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: single-node-kubernetes-bootstrap-state-
+      register: kubernetes_bootstrap_test_root
+
+    - name: Exercise bootstrap state transitions
+      block:
+        - name: Create a competing bootstrap lock fixture
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_lock_directory }}"
+            state: directory
+            mode: "0700"
+
+        - name: Initialize the lock-refusal result
+          ansible.builtin.set_fact:
+            kubernetes_bootstrap_test_lock_refused: false
+
+        - name: Attempt bootstrap while another controller owns the lock
+          block:
+            - name: Invoke the bootstrap role against the competing lock
+              ansible.builtin.include_role:
+                name: kubernetes_bootstrap
+              vars:
+                kubernetes_bootstrap_lock_directory: >-
+                  {{ kubernetes_bootstrap_test_lock_directory }}
+          rescue:
+            - name: Record the expected lock refusal
+              ansible.builtin.set_fact:
+                kubernetes_bootstrap_test_lock_refused: true
+
+        - name: Require bootstrap to preserve and refuse a competing lock
+          ansible.builtin.stat:
+            path: "{{ kubernetes_bootstrap_test_lock_directory }}"
+          register: kubernetes_bootstrap_test_competing_lock
+
+        - name: Validate competing-lock behavior
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_test_lock_refused
+              - kubernetes_bootstrap_test_competing_lock.stat.isdir
+
+        - name: Remove the competing bootstrap lock fixture
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_lock_directory }}"
+            state: absent
+
+        - name: Create a successful API probe fixture
+          ansible.builtin.copy:
+            content: |-
+              #!/bin/sh
+              echo "a future successful readiness response"
+              exit 0
+            dest: "{{ kubernetes_bootstrap_test_kubectl_path }}"
+            mode: "0755"
+
+        - name: Detect a host with absent state roots
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: &bootstrap_state_test_vars
+            kubernetes_bootstrap_state_roots: "{{ kubernetes_bootstrap_test_state_roots }}"
+            kubernetes_bootstrap_state_evidence_paths: "{{ kubernetes_bootstrap_test_evidence_paths }}"
+            kubernetes_bootstrap_required_state_files: "{{ kubernetes_bootstrap_test_required_files }}"
+            kubernetes_bootstrap_required_state_directories: "{{ kubernetes_bootstrap_test_required_directories }}"
+            kubernetes_bootstrap_required_state_paths: "{{ kubernetes_bootstrap_test_required_paths }}"
+            kubernetes_bootstrap_forbidden_complete_state_paths: >-
+              {{ kubernetes_bootstrap_test_forbidden_paths }}
+            kubernetes_bootstrap_etcd_member_path: "{{ kubernetes_bootstrap_test_etcd_member_path }}"
+            kubernetes_bootstrap_kubectl_path: "{{ kubernetes_bootstrap_test_kubectl_path }}"
+            kubernetes_bootstrap_kubernetes_directory: >-
+              {{ kubernetes_bootstrap_test_kubernetes_directory }}
+            kubernetes_bootstrap_static_pod_manifest_directory: >-
+              {{ kubernetes_bootstrap_test_static_pod_manifest_directory }}
+            kubernetes_bootstrap_static_pod_manifest_paths: >-
+              {{ kubernetes_bootstrap_test_static_pod_manifest_paths }}
+            kubernetes_bootstrap_static_pod_manifest_owner_uid: >-
+              {{ ansible_facts['user_uid'] }}
+            kubernetes_bootstrap_static_pod_manifest_owner_gid: >-
+              {{ ansible_facts['user_gid'] }}
+            kubernetes_bootstrap_api_ready_retries: 1
+            kubernetes_bootstrap_api_ready_delay: 0
+
+        - name: Require absent state roots to be fresh
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'fresh'
+
+        - name: Create the invalid state-root parent directory
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_state_roots | first | dirname }}"
+            state: directory
+            mode: "0755"
+
+        - name: Replace a state root with an invalid regular file
+          ansible.builtin.copy:
+            content: invalid-root
+            dest: "{{ kubernetes_bootstrap_test_state_roots | first }}"
+            mode: "0600"
+
+        - name: Detect an invalid state root
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require an invalid state root to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+
+        - name: Remove the invalid state root
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_state_roots | first }}"
+            state: absent
+
+        - name: Create empty state roots
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            mode: "0755"
+          loop: "{{ kubernetes_bootstrap_test_state_roots }}"
+
+        - name: Detect an empty host
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require empty state to be fresh
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'fresh'
+
+        - name: Make the empty Kubernetes configuration directory writable
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_kubernetes_directory }}"
+            mode: "0775"
+
+        - name: Detect an insecure empty Kubernetes configuration directory
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require insecure empty Kubernetes state to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+              - >-
+                kubernetes_bootstrap_test_kubernetes_directory
+                in kubernetes_bootstrap_invalid_required_state_paths
+
+        - name: Restore the empty Kubernetes configuration directory mode
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_kubernetes_directory }}"
+            mode: "0755"
+
+        - name: Create the isolated PKI directory
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_root.path }}/etc/kubernetes/pki"
+            state: directory
+            mode: "0700"
+
+        - name: Populate the unlisted isolated PKI key
+          ansible.builtin.copy:
+            content: partial-key-material
+            dest: "{{ kubernetes_bootstrap_test_root.path }}/etc/kubernetes/pki/ca.key"
+            mode: "0600"
+
+        - name: Detect isolated unlisted state
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require isolated state to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+
+        - name: Reset isolated state roots
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: "{{ kubernetes_bootstrap_test_state_roots }}"
+
+        - name: Recreate state and required directories
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            mode: "0755"
+          loop: >-
+            {{
+              kubernetes_bootstrap_test_state_roots
+              + kubernetes_bootstrap_test_required_directories
+              + (
+                kubernetes_bootstrap_test_required_files
+                | map('dirname')
+                | unique
+                | list
+              )
+            }}
+
+        - name: Create complete required state files
+          ansible.builtin.copy:
+            content: valid-state
+            dest: "{{ item }}"
+            mode: "0600"
+          loop: "{{ kubernetes_bootstrap_test_required_files }}"
+
+        - name: Apply the kubeadm static Pod manifest directory mode
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_static_pod_manifest_directory }}"
+            mode: "0700"
+
+        - name: Populate the etcd member directory
+          ansible.builtin.copy:
+            content: etcd-state
+            dest: "{{ kubernetes_bootstrap_test_etcd_member_path }}/member-data"
+            mode: "0600"
+
+        - name: Detect complete state with a successful API
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require complete API-backed state to be healthy
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'healthy'
+
+        - name: Make an expected static Pod manifest group-readable
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_static_pod_manifest_paths | first }}"
+            mode: "0640"
+
+        - name: Detect insecure static Pod manifest permissions
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require insecure static Pod manifest state to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+              - >-
+                kubernetes_bootstrap_test_static_pod_manifest_paths | first
+                in kubernetes_bootstrap_invalid_required_state_paths
+
+        - name: Restore the expected static Pod manifest permissions
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_static_pod_manifest_paths | first }}"
+            mode: "0600"
+
+        - name: Create an unexpected static Pod manifest backup
+          ansible.builtin.copy:
+            content: unexpected-static-pod-state
+            dest: >-
+              {{ kubernetes_bootstrap_test_static_pod_manifest_directory }}/kube-apiserver.yaml.backup
+            mode: "0600"
+
+        - name: Detect an unexpected static Pod manifest
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require unexpected static Pod manifest state to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+              - >-
+                kubernetes_bootstrap_test_static_pod_manifest_directory
+                ~ '/kube-apiserver.yaml.backup'
+                in kubernetes_bootstrap_invalid_required_state_paths
+
+        - name: Remove the unexpected static Pod manifest backup
+          ansible.builtin.file:
+            path: >-
+              {{ kubernetes_bootstrap_test_static_pod_manifest_directory }}/kube-apiserver.yaml.backup
+            state: absent
+
+        - name: Make the static Pod manifest directory permissive
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_static_pod_manifest_directory }}"
+            mode: "0755"
+
+        - name: Detect insecure static Pod manifest directory permissions
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require insecure static Pod manifest directory state to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+              - >-
+                kubernetes_bootstrap_test_static_pod_manifest_directory
+                in kubernetes_bootstrap_invalid_required_state_paths
+
+        - name: Restore the static Pod manifest directory permissions
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_static_pod_manifest_directory }}"
+            mode: "0700"
+
+        - name: Create forbidden transient kubeadm state
+          ansible.builtin.copy:
+            content: transient-state
+            dest: "{{ kubernetes_bootstrap_test_forbidden_paths | first }}"
+            mode: "0600"
+
+        - name: Detect forbidden transient kubeadm state
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require forbidden transient state to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+              - >-
+                kubernetes_bootstrap_test_forbidden_paths | first
+                in kubernetes_bootstrap_invalid_required_state_paths
+
+        - name: Remove forbidden transient kubeadm state
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_forbidden_paths | first }}"
+            state: absent
+
+        - name: Corrupt a required state file
+          ansible.builtin.copy:
+            content: ""
+            dest: "{{ kubernetes_bootstrap_test_required_files | first }}"
+            mode: "0600"
+
+        - name: Detect invalid required state
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require invalid required state to be partial
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'partial'
+              - >-
+                kubernetes_bootstrap_test_required_files | first
+                in kubernetes_bootstrap_invalid_required_state_paths
+
+        - name: Restore the required state file
+          ansible.builtin.copy:
+            content: valid-state
+            dest: "{{ kubernetes_bootstrap_test_required_files | first }}"
+            mode: "0600"
+
+        - name: Create a failed API probe fixture
+          ansible.builtin.copy:
+            content: |-
+              #!/bin/sh
+              echo "API unavailable" >&2
+              exit 1
+            dest: "{{ kubernetes_bootstrap_test_kubectl_path }}"
+            mode: "0755"
+
+        - name: Detect complete state with an unavailable API
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: detect.yml
+          vars: *bootstrap_state_test_vars
+
+        - name: Require complete state without an API to be unhealthy
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_state == 'unhealthy'
+
+        - name: Create a ready static Pod probe fixture
+          ansible.builtin.copy:
+            content: |-
+              #!/bin/sh
+              echo '{"status":{"phase":"Running","containerStatuses":[{"ready":true}]}}'
+              exit 0
+            dest: "{{ kubernetes_bootstrap_test_kubectl_path }}"
+            mode: "0755"
+
+        - name: Validate a ready static Pod fixture
+          ansible.builtin.include_role:
+            name: kubernetes_bootstrap
+            tasks_from: validate_static_pods.yml
+          vars: &bootstrap_static_pod_test_vars
+            kubernetes_bootstrap_kubectl_path: "{{ kubernetes_bootstrap_test_kubectl_path }}"
+            kubernetes_bootstrap_static_pod_components:
+              - test-control-plane
+            kubernetes_bootstrap_node_name: test-node
+            kubernetes_bootstrap_control_plane_ready_retries: 1
+            kubernetes_bootstrap_control_plane_ready_delay: 0
+
+        - name: Create a non-ready static Pod probe fixture
+          ansible.builtin.copy:
+            content: |-
+              #!/bin/sh
+              echo '{"status":{"phase":"Running","containerStatuses":[{"ready":false}]}}'
+              exit 0
+            dest: "{{ kubernetes_bootstrap_test_kubectl_path }}"
+            mode: "0755"
+
+        - name: Initialize the static Pod refusal result
+          ansible.builtin.set_fact:
+            kubernetes_bootstrap_test_static_pod_refused: false
+
+        - name: Validate a non-ready static Pod fixture
+          block:
+            - name: Invoke static Pod validation against the non-ready fixture
+              ansible.builtin.include_role:
+                name: kubernetes_bootstrap
+                tasks_from: validate_static_pods.yml
+              vars: *bootstrap_static_pod_test_vars
+          rescue:
+            - name: Record the expected static Pod refusal
+              ansible.builtin.set_fact:
+                kubernetes_bootstrap_test_static_pod_refused: true
+
+        - name: Require a non-ready static Pod to fail validation
+          ansible.builtin.assert:
+            that:
+              - kubernetes_bootstrap_test_static_pod_refused
+      always:
+        - name: Remove the isolated bootstrap-state test root
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_root.path }}"
+            state: absent
+
+  vars:
+    kubernetes_bootstrap_test_state_roots:
+      - "{{ kubernetes_bootstrap_test_root.path }}/etc/kubernetes"
+      - "{{ kubernetes_bootstrap_test_root.path }}/var/lib/etcd"
+      - "{{ kubernetes_bootstrap_test_root.path }}/var/lib/kubelet"
+    kubernetes_bootstrap_test_kubernetes_directory: >-
+      {{ kubernetes_bootstrap_test_root.path }}/etc/kubernetes
+    kubernetes_bootstrap_test_static_pod_manifest_directory: >-
+      {{ kubernetes_bootstrap_test_kubernetes_directory }}/manifests
+    kubernetes_bootstrap_test_static_pod_manifest_paths:
+      - "{{ kubernetes_bootstrap_test_static_pod_manifest_directory }}/kube-apiserver.yaml"
+    kubernetes_bootstrap_test_required_files:
+      - "{{ kubernetes_bootstrap_test_root.path }}/etc/kubernetes/admin.conf"
+      - "{{ kubernetes_bootstrap_test_static_pod_manifest_paths | first }}"
+      - "{{ kubernetes_bootstrap_test_root.path }}/var/lib/kubelet/config.yaml"
+    kubernetes_bootstrap_test_etcd_member_path: >-
+      {{ kubernetes_bootstrap_test_root.path }}/var/lib/etcd/member
+    kubernetes_bootstrap_test_required_directories:
+      - "{{ kubernetes_bootstrap_test_static_pod_manifest_directory }}"
+      - "{{ kubernetes_bootstrap_test_etcd_member_path }}"
+    kubernetes_bootstrap_test_required_paths: >-
+      {{
+        kubernetes_bootstrap_test_required_files
+        + kubernetes_bootstrap_test_required_directories
+      }}
+    kubernetes_bootstrap_test_evidence_paths: >-
+      {{ kubernetes_bootstrap_test_required_paths + kubernetes_bootstrap_test_forbidden_paths }}
+    kubernetes_bootstrap_test_forbidden_paths:
+      - "{{ kubernetes_bootstrap_test_root.path }}/etc/kubernetes/bootstrap-kubelet.conf"
+    kubernetes_bootstrap_test_kubectl_path: >-
+      {{ kubernetes_bootstrap_test_root.path }}/kubectl
+    kubernetes_bootstrap_test_lock_directory: >-
+      {{ kubernetes_bootstrap_test_root.path }}/bootstrap.lock

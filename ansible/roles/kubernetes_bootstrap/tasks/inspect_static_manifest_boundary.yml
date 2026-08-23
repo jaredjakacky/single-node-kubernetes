@@ -1,0 +1,162 @@
+---
+- name: Inspect the Kubernetes configuration directory
+  ansible.builtin.stat:
+    path: "{{ kubernetes_bootstrap_kubernetes_directory }}"
+    follow: false
+  register: kubernetes_bootstrap_kubernetes_directory_stat
+
+- name: Inspect the static Pod manifest directory
+  ansible.builtin.stat:
+    path: "{{ kubernetes_bootstrap_static_pod_manifest_directory }}"
+    follow: false
+  register: kubernetes_bootstrap_static_pod_manifest_directory_stat
+  failed_when: false
+
+- name: Inspect expected static Pod manifest files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop: "{{ kubernetes_bootstrap_static_pod_manifest_paths }}"
+  loop_control:
+    label: "{{ item }}"
+  register: kubernetes_bootstrap_static_pod_manifest_file_stats
+  failed_when: false
+
+- name: Inspect all static Pod manifest directory entries
+  ansible.builtin.find:
+    paths: "{{ kubernetes_bootstrap_static_pod_manifest_directory }}"
+    recurse: false
+    hidden: true
+    file_type: any
+    follow: false
+  when:
+    - kubernetes_bootstrap_static_pod_manifest_directory_stat.stat.isdir | default(false)
+    - not (kubernetes_bootstrap_static_pod_manifest_directory_stat.stat.islnk | default(false))
+  register: kubernetes_bootstrap_static_pod_manifest_directory_entries
+
+- name: Initialize static Pod manifest boundary findings
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_static_pod_manifest_missing_paths: >-
+      {{
+        (
+          [kubernetes_bootstrap_kubernetes_directory]
+          if not (
+            kubernetes_bootstrap_kubernetes_directory_stat.stat.exists
+            | default(false)
+          )
+          else []
+        )
+        + (
+          [kubernetes_bootstrap_static_pod_manifest_directory]
+          if not (
+            kubernetes_bootstrap_static_pod_manifest_directory_stat.stat.exists
+            | default(false)
+          )
+          else []
+        )
+      }}
+    kubernetes_bootstrap_static_pod_manifest_invalid_paths: []
+    kubernetes_bootstrap_static_pod_manifest_unexpected_paths: >-
+      {{
+        (
+          kubernetes_bootstrap_static_pod_manifest_directory_entries.files
+          | default([])
+          | map(attribute='path')
+          | list
+        )
+        | difference(kubernetes_bootstrap_static_pod_manifest_paths)
+        | sort
+      }}
+
+- name: Record missing expected static Pod manifest files
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_static_pod_manifest_missing_paths: >-
+      {{
+        kubernetes_bootstrap_static_pod_manifest_missing_paths
+        + [item.item]
+      }}
+  when: not (item.stat.exists | default(false))
+  loop: "{{ kubernetes_bootstrap_static_pod_manifest_file_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Record an invalid Kubernetes configuration directory
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_static_pod_manifest_invalid_paths: >-
+      {{
+        kubernetes_bootstrap_static_pod_manifest_invalid_paths
+        + [kubernetes_bootstrap_kubernetes_directory]
+      }}
+  when:
+    - kubernetes_bootstrap_kubernetes_directory_stat.stat.exists | default(false)
+    - >-
+      not (
+        kubernetes_bootstrap_kubernetes_directory_stat.stat.isdir
+        | default(false)
+        and not (
+          kubernetes_bootstrap_kubernetes_directory_stat.stat.islnk
+          | default(false)
+        )
+        and kubernetes_bootstrap_kubernetes_directory_stat.stat.uid
+        | default(-1) | int
+        == kubernetes_bootstrap_static_pod_manifest_owner_uid | int
+        and kubernetes_bootstrap_kubernetes_directory_stat.stat.gid
+        | default(-1) | int
+        == kubernetes_bootstrap_static_pod_manifest_owner_gid | int
+        and kubernetes_bootstrap_kubernetes_directory_stat.stat.mode
+        | default('')
+        is match('^[0-7][1357][0145][0145]$')
+      )
+
+- name: Record an invalid static Pod manifest directory
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_static_pod_manifest_invalid_paths: >-
+      {{
+        kubernetes_bootstrap_static_pod_manifest_invalid_paths
+        + [kubernetes_bootstrap_static_pod_manifest_directory]
+      }}
+  when:
+    - kubernetes_bootstrap_static_pod_manifest_directory_stat.stat.exists | default(false)
+    - >-
+      not (
+        kubernetes_bootstrap_static_pod_manifest_directory_stat.stat.isdir
+        | default(false)
+        and not (
+          kubernetes_bootstrap_static_pod_manifest_directory_stat.stat.islnk
+          | default(false)
+        )
+        and kubernetes_bootstrap_static_pod_manifest_directory_stat.stat.uid
+        | default(-1) | int
+        == kubernetes_bootstrap_static_pod_manifest_owner_uid | int
+        and kubernetes_bootstrap_static_pod_manifest_directory_stat.stat.gid
+        | default(-1) | int
+        == kubernetes_bootstrap_static_pod_manifest_owner_gid | int
+        and kubernetes_bootstrap_static_pod_manifest_directory_stat.stat.mode
+        | default('')
+        == kubernetes_bootstrap_static_pod_manifest_directory_mode
+      )
+
+- name: Record invalid static Pod manifest files
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_static_pod_manifest_invalid_paths: >-
+      {{
+        kubernetes_bootstrap_static_pod_manifest_invalid_paths
+        + [item.item]
+      }}
+  when:
+    - item.stat.exists | default(false)
+    - >-
+      not (
+        item.stat.isreg | default(false)
+        and not (item.stat.islnk | default(false))
+        and item.stat.size | default(0) | int > 0
+        and item.stat.uid | default(-1) | int
+        == kubernetes_bootstrap_static_pod_manifest_owner_uid | int
+        and item.stat.gid | default(-1) | int
+        == kubernetes_bootstrap_static_pod_manifest_owner_gid | int
+        and item.stat.mode | default('')
+        == kubernetes_bootstrap_static_pod_manifest_mode
+      )
+  loop: "{{ kubernetes_bootstrap_static_pod_manifest_file_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"

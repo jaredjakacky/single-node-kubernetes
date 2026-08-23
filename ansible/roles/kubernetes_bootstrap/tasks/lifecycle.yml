@@ -1,0 +1,82 @@
+---
+- name: Detect existing Kubernetes bootstrap state
+  ansible.builtin.import_tasks: detect.yml
+
+- name: Collect diagnostics for unsafe existing state
+  ansible.builtin.import_tasks: diagnostics.yml
+  when: kubernetes_bootstrap_state not in ['fresh', 'healthy']
+
+- name: Refuse unsafe existing Kubernetes state
+  ansible.builtin.fail:
+    msg: |-
+      Kubernetes bootstrap state is {{ kubernetes_bootstrap_state }}.
+
+      Detected kubeadm state:
+      {{ kubernetes_bootstrap_present_state_paths | to_nice_yaml(indent=2) }}
+      Missing required kubeadm state:
+      {{ kubernetes_bootstrap_missing_required_state_paths | to_nice_yaml(indent=2) }}
+      Invalid required kubeadm state:
+      {{ kubernetes_bootstrap_invalid_required_state_paths | to_nice_yaml(indent=2) }}
+
+      API readiness stdout:
+      {{ kubernetes_bootstrap_api_ready_probe.stdout | default('not probed', true) }}
+      API readiness stderr:
+      {{ kubernetes_bootstrap_api_ready_probe.stderr | default('not probed', true) }}
+
+      kubelet state: {{ kubernetes_bootstrap_diagnostic_kubelet_state.stdout | default('unknown', true) }}
+      containerd state: {{ kubernetes_bootstrap_diagnostic_containerd_state.stdout | default('unknown', true) }}
+      Extended diagnostics: {{ kubernetes_bootstrap_diagnostic_log_path }}
+
+      Refusing to run kubeadm init or kubeadm reset automatically. Diagnose and
+      repair the existing cluster, or perform an explicit operator-approved
+      reset before running this playbook again.
+  when: kubernetes_bootstrap_state not in ['fresh', 'healthy']
+
+- name: Record whether this run must initialize the cluster
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_was_fresh: "{{ kubernetes_bootstrap_state == 'fresh' }}"
+
+- name: Validate Kubernetes bootstrap inputs
+  ansible.builtin.import_tasks: validate_inputs.yml
+
+- name: Render the kubeadm initialization configuration
+  ansible.builtin.import_tasks: configure.yml
+  when: kubernetes_bootstrap_was_fresh
+
+- name: Validate fresh-host bootstrap prerequisites
+  ansible.builtin.import_tasks: preflight.yml
+  when: kubernetes_bootstrap_was_fresh
+
+- name: Initialize the Kubernetes control plane
+  ansible.builtin.import_tasks: initialize.yml
+  when: kubernetes_bootstrap_was_fresh
+
+- name: Detect Kubernetes state after initialization
+  ansible.builtin.import_tasks: detect.yml
+  when: kubernetes_bootstrap_was_fresh
+
+- name: Collect diagnostics for an unhealthy bootstrap result
+  ansible.builtin.import_tasks: diagnostics.yml
+  when:
+    - kubernetes_bootstrap_was_fresh
+    - kubernetes_bootstrap_state != 'healthy'
+
+- name: Require a healthy initialized control plane
+  ansible.builtin.assert:
+    that:
+      - kubernetes_bootstrap_state == 'healthy'
+    fail_msg: >-
+      Kubernetes initialization returned successfully, but the resulting state
+      is {{ kubernetes_bootstrap_state }}. Refusing automatic cleanup or retry.
+
+- name: Require kubeadm to generate the break-glass kubeconfig initially
+  ansible.builtin.assert:
+    that:
+      - "'/etc/kubernetes/super-admin.conf' in kubernetes_bootstrap_present_state_paths"
+    fail_msg: >-
+      kubeadm init did not generate /etc/kubernetes/super-admin.conf. Refusing
+      to accept an incomplete fresh bootstrap.
+  when: kubernetes_bootstrap_was_fresh
+
+- name: Validate the initialized Kubernetes control plane
+  ansible.builtin.import_tasks: validate.yml

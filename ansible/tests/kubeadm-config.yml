@@ -1,0 +1,69 @@
+---
+- name: Validate the rendered kubeadm configuration
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Load the centralized Kubernetes version
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/kubernetes/defaults/main.yml"
+
+    - name: Load the derived Kubernetes version values
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/kubernetes/vars/main.yml"
+
+    - name: Create an isolated kubeadm configuration file
+      ansible.builtin.tempfile:
+        state: file
+        prefix: single-node-kubernetes-kubeadm-config-
+        suffix: .yaml
+      register: kubernetes_bootstrap_test_config
+
+    - name: Render and validate the kubeadm configuration
+      block:
+        - name: Render a representative kubeadm configuration
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../roles/kubernetes_bootstrap/templates/kubeadm-init.yaml.j2"
+            dest: "{{ kubernetes_bootstrap_test_config.path }}"
+            mode: "0600"
+            validate: >-
+              {{ kubernetes_bootstrap_test_kubeadm_path }} config validate --config %s
+
+        - name: Read the representative kubeadm configuration
+          ansible.builtin.slurp:
+            src: "{{ kubernetes_bootstrap_test_config.path }}"
+          register: kubernetes_bootstrap_test_rendered_config
+
+        - name: Require the selected Cilium-compatible network boundary
+          ansible.builtin.assert:
+            that:
+              - kubernetes_minor_version == '1.36'
+              - >-
+                kubernetes_bootstrap_test_rendered_config.content
+                | b64decode
+                is not search('(?m)^\s*podSubnet:')
+              - >-
+                kubernetes_bootstrap_test_rendered_config.content
+                | b64decode
+                is search('(?m)^\s*serviceSubnet: "10\.96\.0\.0/12"$')
+      always:
+        - name: Remove the isolated kubeadm configuration file
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_config.path }}"
+            state: absent
+
+  vars:
+    kubernetes_bootstrap_test_kubeadm_path: ""
+    kubernetes_bootstrap_kubeadm_api_version: kubeadm.k8s.io/v1beta4
+    kubernetes_bootstrap_advertise_address: 192.0.2.10
+    kubernetes_bootstrap_api_bind_port: 6443
+    kubernetes_bootstrap_node_name: k8s-01
+    kubernetes_bootstrap_cri_socket: unix:///run/containerd/containerd.sock
+    kubernetes_bootstrap_node_ip: 192.0.2.10
+    kubernetes_bootstrap_cluster_name: single-node-kubernetes
+    kubernetes_bootstrap_control_plane_endpoint: api.example.invalid:6443
+    kubernetes_bootstrap_dns_domain: cluster.local
+    kubernetes_bootstrap_service_subnet: 10.96.0.0/12
+    kubernetes_bootstrap_api_server_cert_sans:
+      - api.example.invalid

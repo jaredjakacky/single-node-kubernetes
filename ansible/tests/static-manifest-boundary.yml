@@ -1,0 +1,82 @@
+---
+- name: Test the static Pod manifest security boundary
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  tasks:
+    - name: Create an isolated static Pod manifest test root
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: single-node-kubernetes-static-manifests-
+      register: kubernetes_bootstrap_test_static_manifest_root
+
+    - name: Exercise static Pod manifest boundary cases
+      block:
+        - name: Validate representative static Pod manifest boundaries
+          ansible.builtin.include_tasks: tasks/static-manifest-boundary-case.yml
+          loop:
+            - name: exact kubeadm permissions and contents
+              should_fail: false
+            - name: group-readable manifest
+              manifest_mode: "0640"
+              should_fail: true
+            - name: group-writable manifest
+              manifest_mode: "0620"
+              should_fail: true
+            - name: world-readable manifest
+              manifest_mode: "0604"
+              should_fail: true
+            - name: manifest ownership mismatch
+              owner_mismatch: true
+              should_fail: true
+            - name: permissive manifest directory
+              manifest_directory_mode: "0755"
+              should_fail: true
+            - name: writable Kubernetes configuration directory
+              kubernetes_directory_mode: "0775"
+              should_fail: true
+            - name: expected manifest symlink
+              manifest_symlink: true
+              should_fail: true
+            - name: empty expected manifest
+              empty_manifest: true
+              should_fail: true
+            - name: unexpected backup manifest
+              unexpected_path: kube-apiserver.yaml.backup
+              should_fail: true
+            - name: unexpected hidden editor file
+              unexpected_path: .kube-apiserver.yaml.swp
+              should_fail: true
+          loop_control:
+            loop_var: kubernetes_bootstrap_test_static_manifest_case
+            label: "{{ kubernetes_bootstrap_test_static_manifest_case.name }}"
+      always:
+        - name: Remove the isolated static Pod manifest test root
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_static_manifest_root.path }}"
+            state: absent
+
+  vars:
+    kubernetes_bootstrap_test_kubernetes_directory: >-
+      {{ kubernetes_bootstrap_test_static_manifest_root.path }}/etc/kubernetes
+    kubernetes_bootstrap_test_static_manifest_directory: >-
+      {{ kubernetes_bootstrap_test_kubernetes_directory }}/manifests
+    kubernetes_bootstrap_test_expected_static_pod_manifests:
+      - component: etcd
+        path: "{{ kubernetes_bootstrap_test_static_manifest_directory }}/etcd.yaml"
+      - component: kube-apiserver
+        path: >-
+          {{ kubernetes_bootstrap_test_static_manifest_directory }}/kube-apiserver.yaml
+      - component: kube-controller-manager
+        path: >-
+          {{ kubernetes_bootstrap_test_static_manifest_directory }}/kube-controller-manager.yaml
+      - component: kube-scheduler
+        path: >-
+          {{ kubernetes_bootstrap_test_static_manifest_directory }}/kube-scheduler.yaml
+    kubernetes_bootstrap_test_static_pod_manifest_paths: >-
+      {{
+        kubernetes_bootstrap_test_expected_static_pod_manifests
+        | map(attribute='path')
+        | list
+      }}

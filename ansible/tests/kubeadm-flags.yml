@@ -1,0 +1,70 @@
+---
+- name: Test kubeadm kubelet argument validation
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  tasks:
+    - name: Create an isolated kubeadm-flags test file
+      ansible.builtin.tempfile:
+        state: file
+        prefix: single-node-kubernetes-kubeadm-flags-
+        suffix: .env
+      register: kubernetes_bootstrap_test_kubelet_flags_file
+
+    - name: Exercise kubeadm kubelet argument cases
+      block:
+        - name: Validate representative kubeadm-flags files
+          ansible.builtin.include_tasks: tasks/kubeadm-flags-case.yml
+          loop:
+            - name: exact kubeadm-generated single argument
+              content: 'KUBELET_KUBEADM_ARGS="--node-ip=192.0.2.10"'
+              should_fail: false
+            - name: expected argument first
+              content: 'KUBELET_KUBEADM_ARGS="--node-ip=192.0.2.10 --v=2"'
+              should_fail: false
+            - name: expected argument in the middle
+              content: >-
+                KUBELET_KUBEADM_ARGS="--hostname-override=k8s-01
+                --node-ip=192.0.2.10 --v=2"
+              should_fail: false
+            - name: expected argument last
+              content: >-
+                KUBELET_KUBEADM_ARGS="--hostname-override=k8s-01
+                --node-ip=192.0.2.10"
+              should_fail: false
+            - name: incorrect node IP
+              content: 'KUBELET_KUBEADM_ARGS="--node-ip=198.51.100.20"'
+              should_fail: true
+            - name: duplicate expected node IP
+              content: >-
+                KUBELET_KUBEADM_ARGS="--node-ip=192.0.2.10
+                --node-ip=192.0.2.10"
+              should_fail: true
+            - name: conflicting node IP
+              content: >-
+                KUBELET_KUBEADM_ARGS="--node-ip=192.0.2.10
+                --node-ip=198.51.100.20"
+              should_fail: true
+            - name: unexpected assignment name
+              content: 'KUBELET_EXTRA_ARGS="--node-ip=192.0.2.10"'
+              should_fail: true
+            - name: multiple assignments
+              content: |-
+                KUBELET_KUBEADM_ARGS="--node-ip=192.0.2.10"
+                UNEXPECTED=value
+              should_fail: true
+            - name: malformed quoting
+              content: 'KUBELET_KUBEADM_ARGS="--node-ip=192.0.2.10'
+              should_fail: true
+          loop_control:
+            loop_var: kubernetes_bootstrap_test_kubelet_flags_case
+            label: "{{ kubernetes_bootstrap_test_kubelet_flags_case.name }}"
+      always:
+        - name: Remove the isolated kubeadm-flags test file
+          ansible.builtin.file:
+            path: "{{ kubernetes_bootstrap_test_kubelet_flags_file.path }}"
+            state: absent
+
+  vars:
+    kubernetes_bootstrap_test_expected_node_ip: 192.0.2.10

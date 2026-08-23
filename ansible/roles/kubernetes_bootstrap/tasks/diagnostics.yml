@@ -1,0 +1,70 @@
+---
+- name: Read kubelet state for diagnostics
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - kubelet
+  register: kubernetes_bootstrap_diagnostic_kubelet_state
+  changed_when: false
+  failed_when: false
+
+- name: Read containerd state for diagnostics
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - containerd
+  register: kubernetes_bootstrap_diagnostic_containerd_state
+  changed_when: false
+  failed_when: false
+
+- name: Read recent kubelet journal for diagnostics
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/journalctl
+      - --unit=kubelet
+      - --lines=50
+      - --no-pager
+  register: kubernetes_bootstrap_diagnostic_kubelet_journal
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Read recent containerd journal for diagnostics
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/journalctl
+      - --unit=containerd
+      - --lines=50
+      - --no-pager
+  register: kubernetes_bootstrap_diagnostic_containerd_journal
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Create the protected bootstrap diagnostic directory
+  ansible.builtin.file:
+    path: "{{ kubernetes_bootstrap_diagnostic_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Store protected bootstrap diagnostics on the host
+  ansible.builtin.copy:
+    content: |-
+      captured_at={{ ansible_date_time.iso8601 }}
+      kubelet_state={{ kubernetes_bootstrap_diagnostic_kubelet_state.stdout | default('unknown', true) }}
+      containerd_state={{ kubernetes_bootstrap_diagnostic_containerd_state.stdout | default('unknown', true) }}
+
+      kubelet_journal:
+      {{ kubernetes_bootstrap_diagnostic_kubelet_journal.stdout | default('unavailable', true) }}
+
+      containerd_journal:
+      {{ kubernetes_bootstrap_diagnostic_containerd_journal.stdout | default('unavailable', true) }}
+    dest: "{{ kubernetes_bootstrap_diagnostic_log_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true

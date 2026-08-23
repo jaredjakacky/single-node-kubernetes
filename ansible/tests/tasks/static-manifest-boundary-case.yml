@@ -1,0 +1,132 @@
+---
+- name: Reset the static Pod manifest boundary fixture
+  ansible.builtin.file:
+    path: "{{ kubernetes_bootstrap_test_kubernetes_directory }}"
+    state: absent
+
+- name: Create the Kubernetes configuration directory fixture
+  ansible.builtin.file:
+    path: "{{ kubernetes_bootstrap_test_kubernetes_directory }}"
+    state: directory
+    owner: "{{ ansible_facts['user_uid'] }}"
+    group: "{{ ansible_facts['user_gid'] }}"
+    mode: >-
+      {{
+        kubernetes_bootstrap_test_static_manifest_case.kubernetes_directory_mode
+        | default('0755')
+      }}
+
+- name: Create the static Pod manifest directory fixture
+  ansible.builtin.file:
+    path: "{{ kubernetes_bootstrap_test_static_manifest_directory }}"
+    state: directory
+    owner: "{{ ansible_facts['user_uid'] }}"
+    group: "{{ ansible_facts['user_gid'] }}"
+    mode: >-
+      {{
+        kubernetes_bootstrap_test_static_manifest_case.manifest_directory_mode
+        | default('0700')
+      }}
+
+- name: Create expected static Pod manifest fixtures
+  ansible.builtin.copy:
+    content: |-
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: {{ item.component }}
+      spec:
+        containers:
+          - name: {{ item.component }}
+            image: registry.k8s.io/{{ item.component }}:test
+    dest: "{{ item.path }}"
+    owner: "{{ ansible_facts['user_uid'] }}"
+    group: "{{ ansible_facts['user_gid'] }}"
+    mode: "0600"
+  loop: "{{ kubernetes_bootstrap_test_expected_static_pod_manifests }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Apply the static Pod manifest mode fixture
+  ansible.builtin.file:
+    path: "{{ kubernetes_bootstrap_test_static_pod_manifest_paths | first }}"
+    mode: "{{ kubernetes_bootstrap_test_static_manifest_case.manifest_mode }}"
+  when: kubernetes_bootstrap_test_static_manifest_case.manifest_mode is defined
+
+- name: Replace an expected manifest with a symlink fixture
+  when: kubernetes_bootstrap_test_static_manifest_case.manifest_symlink | default(false)
+  block:
+    - name: Remove the expected static Pod manifest fixture
+      ansible.builtin.file:
+        path: "{{ kubernetes_bootstrap_test_static_pod_manifest_paths | first }}"
+        state: absent
+
+    - name: Create the expected static Pod manifest symlink fixture
+      ansible.builtin.file:
+        src: "{{ kubernetes_bootstrap_test_static_pod_manifest_paths | last }}"
+        dest: "{{ kubernetes_bootstrap_test_static_pod_manifest_paths | first }}"
+        state: link
+
+- name: Empty an expected static Pod manifest fixture
+  ansible.builtin.copy:
+    content: ""
+    dest: "{{ kubernetes_bootstrap_test_static_pod_manifest_paths | first }}"
+    owner: "{{ ansible_facts['user_uid'] }}"
+    group: "{{ ansible_facts['user_gid'] }}"
+    mode: "0600"
+  when: kubernetes_bootstrap_test_static_manifest_case.empty_manifest | default(false)
+
+- name: Create an unexpected static Pod manifest directory entry
+  ansible.builtin.copy:
+    content: unexpected-static-pod-definition
+    dest: >-
+      {{
+        kubernetes_bootstrap_test_static_manifest_directory
+        ~ '/'
+        ~ kubernetes_bootstrap_test_static_manifest_case.unexpected_path
+      }}
+    owner: "{{ ansible_facts['user_uid'] }}"
+    group: "{{ ansible_facts['user_gid'] }}"
+    mode: "0600"
+  when: kubernetes_bootstrap_test_static_manifest_case.unexpected_path is defined
+
+- name: Initialize the static Pod manifest validation result
+  ansible.builtin.set_fact:
+    kubernetes_bootstrap_test_static_manifest_failed: false
+
+- name: Validate the static Pod manifest boundary fixture
+  block:
+    - name: Invoke static Pod manifest boundary validation
+      ansible.builtin.include_role:
+        name: kubernetes_bootstrap
+        tasks_from: validate_static_manifest_boundary.yml
+      vars:
+        kubernetes_bootstrap_kubernetes_directory: >-
+          {{ kubernetes_bootstrap_test_kubernetes_directory }}
+        kubernetes_bootstrap_static_pod_manifest_directory: >-
+          {{ kubernetes_bootstrap_test_static_manifest_directory }}
+        kubernetes_bootstrap_static_pod_manifest_paths: >-
+          {{ kubernetes_bootstrap_test_static_pod_manifest_paths }}
+        kubernetes_bootstrap_static_pod_manifest_owner_uid: >-
+          {{
+            ansible_facts['user_uid'] | int + 1
+            if kubernetes_bootstrap_test_static_manifest_case.owner_mismatch
+            | default(false)
+            else ansible_facts['user_uid']
+          }}
+        kubernetes_bootstrap_static_pod_manifest_owner_gid: >-
+          {{ ansible_facts['user_gid'] }}
+  rescue:
+    - name: Record rejected static Pod manifest boundary
+      ansible.builtin.set_fact:
+        kubernetes_bootstrap_test_static_manifest_failed: true
+
+- name: Require the expected static Pod manifest boundary result
+  ansible.builtin.assert:
+    that:
+      - >-
+        kubernetes_bootstrap_test_static_manifest_failed
+        == kubernetes_bootstrap_test_static_manifest_case.should_fail
+    fail_msg: >-
+      Case {{ kubernetes_bootstrap_test_static_manifest_case.name }} produced
+      an unexpected validation result.
