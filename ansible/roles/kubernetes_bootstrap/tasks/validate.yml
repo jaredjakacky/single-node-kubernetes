@@ -205,7 +205,7 @@
 - name: Validate the static Pod manifest security boundary
   ansible.builtin.import_tasks: validate_static_manifest_boundary.yml
 
-- name: Read control-plane static Pod manifest for {{ item }}
+- name: Read control-plane static Pod manifests
   ansible.builtin.slurp:
     src: "{{ kubernetes_bootstrap_static_pod_manifest_directory }}/{{ item }}.yaml"
   loop: "{{ kubernetes_bootstrap_static_pod_components }}"
@@ -218,7 +218,7 @@
   ansible.builtin.set_fact:
     kubernetes_bootstrap_static_pod_manifest_invariants: []
 
-- name: Derive static Pod manifest invariants for {{ item.item }}
+- name: Derive static Pod manifest invariants
   ansible.builtin.set_fact:
     kubernetes_bootstrap_static_pod_manifest_invariants: >-
       {{
