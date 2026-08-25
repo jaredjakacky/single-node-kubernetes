@@ -3,12 +3,12 @@
   ansible.builtin.set_fact:
     cilium_release_action: refuse
 
-- name: Accept a genuinely empty CNI boundary for first installation
+- name: Accept an empty meaningful CNI boundary for first installation
   ansible.builtin.set_fact:
     cilium_release_action: install
   when:
     - cilium_release_records | length == 0
-    - cilium_observed_cni_paths | length == 0
+    - cilium_observed_meaningful_cni_paths | length == 0
     - cilium_observed_resource_names | length == 0
 
 - name: Refuse unmanaged or inconsistent state without a Helm release
@@ -17,12 +17,16 @@
       No Cilium Helm release exists, but the cluster networking boundary is not
       empty. Refusing to remove, adopt, or overwrite existing state.
 
-      CNI entries: {{ cilium_observed_cni_paths | to_nice_json }}
+      Raw CNI entries: {{ cilium_observed_cni_paths | to_nice_json }}
+      Validated package baseline:
+      {{ cilium_observed_known_safe_cni_paths | to_nice_json }}
+      Meaningful CNI entries:
+      {{ cilium_observed_meaningful_cni_paths | to_nice_json }}
       Cilium resources: {{ cilium_observed_resource_names | to_nice_json }}
   when:
     - cilium_release_records | length == 0
     - >-
-      cilium_observed_cni_paths | length > 0
+      cilium_observed_meaningful_cni_paths | length > 0
       or cilium_observed_resource_names | length > 0
 
 - name: Validate the shape of a managed Cilium installation
@@ -30,7 +34,8 @@
     that:
       - cilium_existing_release['status'] == 'deployed'
       - >-
-        cilium_observed_cni_paths == [cilium_expected_cni_config_path]
+        cilium_observed_meaningful_cni_paths
+        == [cilium_expected_cni_config_path]
       - >-
         cilium_observed_representative_resource_names | sort
         == cilium_expected_resource_names | sort
@@ -40,7 +45,11 @@
       drifted. Refusing an implicit repair or configuration mutation.
 
       Helm state: {{ cilium_existing_release | to_nice_json }}
-      CNI entries: {{ cilium_observed_cni_paths | to_nice_json }}
+      Raw CNI entries: {{ cilium_observed_cni_paths | to_nice_json }}
+      Validated package baseline:
+      {{ cilium_observed_known_safe_cni_paths | to_nice_json }}
+      Meaningful CNI entries:
+      {{ cilium_observed_meaningful_cni_paths | to_nice_json }}
       Cilium resources: {{ cilium_observed_resource_names | to_nice_json }}
   vars:
     cilium_expected_resource_names:

@@ -1,0 +1,44 @@
+---
+- name: Initialize the CNI normalization case result
+  ansible.builtin.set_fact:
+    cilium_test_cni_normalization_failed: false
+
+- name: Normalize the runtime CNI fixture
+  block:
+    - name: Find runtime CNI fixture entries
+      ansible.builtin.find:
+        paths: /etc/cni/net.d
+        file_type: any
+        hidden: true
+        recurse: false
+      register: cilium_cni_entries
+
+    - name: Invoke Cilium CNI state normalization
+      ansible.builtin.include_role:
+        name: cilium
+        tasks_from: normalize_cni_state.yml
+  rescue:
+    - name: Record rejected CNI normalization fixture
+      ansible.builtin.set_fact:
+        cilium_test_cni_normalization_failed: true
+
+- name: Require the expected CNI normalization result
+  ansible.builtin.assert:
+    that:
+      - >-
+        cilium_test_cni_normalization_failed
+        == cilium_test_cni_case.should_fail
+      - >-
+        cilium_test_cni_normalization_failed
+        or cilium_observed_cni_paths == cilium_test_cni_case.raw_paths
+      - >-
+        cilium_test_cni_normalization_failed
+        or cilium_observed_known_safe_cni_paths
+        == cilium_test_cni_case.safe_paths
+      - >-
+        cilium_test_cni_normalization_failed
+        or cilium_observed_meaningful_cni_paths
+        == cilium_test_cni_case.meaningful_paths
+    fail_msg: >-
+      Runtime CNI case {{ cilium_test_cni_case.name }} produced an unexpected
+      normalization result.

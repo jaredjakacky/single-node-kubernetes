@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 from typing import Any
 
 import yaml
@@ -207,6 +208,171 @@ def validate_state_machine() -> None:
         "when: cilium_release_action == 'upgrade'" in converge_text,
         "upgrade must be state-gated",
     )
+
+
+def validate_cni_package_baseline() -> None:
+    variables = load_yaml(CILIUM_ROLE / "vars" / "main.yml")
+    normalize_path = CILIUM_ROLE / "tasks" / "normalize_cni_state.yml"
+    normalize = load_yaml(normalize_path)
+    normalize_text = normalize_path.read_text(encoding="utf-8")
+    detect_text = (CILIUM_ROLE / "tasks" / "detect.yml").read_text(encoding="utf-8")
+    classify_text = (CILIUM_ROLE / "tasks" / "classify.yml").read_text(encoding="utf-8")
+    fixture = (ANSIBLE_ROOT / "tests" / "cilium-cni-baseline.yml").read_text(
+        encoding="utf-8"
+    )
+    workflow = (
+        REPOSITORY_ROOT / ".github" / "workflows" / "ansible-ci.yaml"
+    ).read_text(encoding="utf-8")
+
+    sentinel = "/etc/cni/net.d/.kubernetes-cni-keep"
+    cilium_config = "/etc/cni/net.d/05-cilium.conflist"
+    require(
+        variables["cilium_kubernetes_cni_keep_path"] == sentinel,
+        "the Kubernetes CNI sentinel must remain an exact path constant",
+    )
+    require(
+        variables["cilium_kubernetes_cni_package"] == "kubernetes-cni",
+        "the sentinel must remain tied to its upstream Debian package",
+    )
+    require(
+        variables["cilium_dpkg_query_binary"] == "/usr/bin/dpkg-query",
+        "sentinel ownership must use Debian's installed-package database",
+    )
+    require(
+        variables["cilium_expected_cni_config_path"] == cilium_config,
+        "the managed Cilium CNI path drifted",
+    )
+
+    task_names = [task["name"] for task in normalize]
+    validation_index = task_names.index(
+        "Validate the optional Kubernetes CNI package sentinel"
+    )
+    normalization_index = task_names.index(
+        "Normalize raw, package-baseline, and meaningful CNI state"
+    )
+    require(
+        validation_index < normalization_index,
+        "the sentinel must be positively validated before it is excluded",
+    )
+    require(
+        "ansible.builtin.stat" in normalize[0]
+        and normalize[0]["ansible.builtin.stat"]["path"]
+        == "{{ cilium_kubernetes_cni_keep_path }}",
+        "sentinel metadata must be read from the exact expected path",
+    )
+    ownership_task = next(
+        task
+        for task in normalize
+        if task["name"] == "Read package ownership for the Kubernetes CNI sentinel"
+    )
+    require(
+        ownership_task["ansible.builtin.command"]["argv"]
+        == [
+            "{{ cilium_dpkg_query_binary }}",
+            "--search",
+            "{{ cilium_kubernetes_cni_keep_path }}",
+        ],
+        "dpkg ownership must query the exact sentinel path structurally",
+    )
+    for proof in (
+        ".stat.isreg",
+        ".stat.islnk",
+        ".stat.size",
+        ".stat.uid",
+        ".stat.gid",
+        ".stat.mode",
+        "cilium_kubernetes_cni_keep_ownership.rc",
+        "cilium_kubernetes_cni_keep_ownership.stdout_lines",
+        "cilium_kubernetes_cni_keep_owner_pattern",
+    ):
+        require(proof in normalize_text, f"sentinel proof missing {proof!r}")
+    for forbidden in (
+        "basename",
+        "*.kubernetes-cni-keep",
+        "*.keep",
+        "fileglob",
+        "ansible.builtin.shell",
+        "ansible.builtin.raw",
+        "ansible.builtin.file",
+        "ansible.builtin.copy",
+    ):
+        require(
+            forbidden not in normalize_text,
+            f"CNI baseline introduced broad or mutating logic {forbidden!r}",
+        )
+
+    owner_pattern = re.compile(
+        rf"^kubernetes-cni(?::[a-z0-9][a-z0-9-]*)?: {re.escape(sentinel)}$"
+    )
+    require(
+        owner_pattern.fullmatch(f"kubernetes-cni: {sentinel}") is not None,
+        "unqualified Debian package ownership must be accepted",
+    )
+    require(
+        owner_pattern.fullmatch(f"kubernetes-cni:amd64: {sentinel}") is not None,
+        "architecture-qualified Debian package ownership must be accepted",
+    )
+    for invalid_owner in (
+        f"not-kubernetes-cni: {sentinel}",
+        "kubernetes-cni: /etc/cni/net.d/other",
+        f"kubernetes-cni:amd64: {sentinel}\nother: {sentinel}",
+    ):
+        require(
+            owner_pattern.fullmatch(invalid_owner) is None,
+            f"invalid package ownership was accepted: {invalid_owner!r}",
+        )
+
+    require(
+        "ansible.builtin.import_tasks: normalize_cni_state.yml" in detect_text,
+        "live detection must normalize and validate the package baseline",
+    )
+    require(
+        "selectattr('path', 'equalto', cilium_expected_cni_config_path)" in detect_text,
+        "the managed Cilium config must be selected by exact path",
+    )
+    require(
+        "cilium_cni_entries.files[0]" not in detect_text,
+        "managed CNI validation must never rely on find ordering",
+    )
+    require(
+        "cilium_managed_cni_entries[0]" in detect_text,
+        "managed metadata must validate the exact selected Cilium entry",
+    )
+    require(
+        "cilium_observed_meaningful_cni_paths" in classify_text,
+        "classification must operate on meaningful CNI state",
+    )
+    require(
+        "cilium_observed_cni_paths | length == 0" not in classify_text,
+        "first install must not require a literally empty raw directory",
+    )
+    for runtime_case in (
+        "exact package sentinel",
+        "sentinel plus unexpected ordinary file",
+        "nonzero sentinel",
+        "group-writable sentinel",
+        "non-root-owned sentinel",
+        "sentinel symlink",
+        "unowned sentinel-shaped file",
+    ):
+        require(
+            runtime_case in fixture, f"runtime CNI fixture missing {runtime_case!r}"
+        )
+    require(
+        "sudo /usr/bin/dpkg --install" in workflow
+        and "tests/cilium-cni-baseline.yml" in workflow,
+        "CI must exercise the role against the real upstream Debian package",
+    )
+    require(
+        'package_version="1.9.1-1.1"' in workflow
+        and "4cd72d8cef4499d3dc410874287b40e" in workflow
+        and "8b4241e0772938c5820cbee37986c1d93" in workflow,
+        "the real-package fixture must remain checksum and version pinned",
+    )
+
+    readme = (ANSIBLE_ROOT / "README.md").read_text(encoding="utf-8")
+    for extension in ("`.conf`", "`.conflist`", "`.json`"):
+        require(extension in readme, f"Cilium cleanup documentation lacks {extension}")
 
 
 def validate_helm_lifecycle_contract() -> None:
@@ -423,6 +589,7 @@ def main() -> None:
     validate_lifecycle_separation()
     validate_pins()
     validate_state_machine()
+    validate_cni_package_baseline()
     validate_helm_lifecycle_contract()
     validate_runtime_proofs()
     validate_topology_policy_separation()

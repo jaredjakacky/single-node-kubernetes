@@ -199,11 +199,27 @@ those settings is an opportunistic role toggle. Layer 7 policy is also disabled
 while standard Kubernetes NetworkPolicy remains enabled; changing one of these
 boundaries requires a separate architecture migration.
 
+On Debian nodes, the upstream `kubernetes-cni` package places an empty
+`/etc/cni/net.d/.kubernetes-cni-keep` file so the otherwise-empty CNI
+configuration directory is retained before a network plugin is installed. It
+is inert package baseline state, not a kubelet CNI configuration. The lifecycle
+accepts the optional file only after proving its exact path, regular-file type,
+zero size, root ownership, safe mode, and `kubernetes-cni` ownership through
+dpkg; it never deletes, repairs, or recreates the marker. Thus the accepted
+pre-install directory is empty or contains only that validated marker. The
+accepted managed directory contains exactly `05-cilium.conflist`, optionally
+alongside the validated marker. Cilium 1.20's exclusive cleanup renames only
+competing `.conf`, `.conflist`, and `.json` files, so the marker remains after a
+normal installation. Every other file, symlink, directory, backup, or CNI
+configuration remains meaningful state and fails closed.
+
 Before a chart mutation, the role holds a host-local lock and classifies Helm,
 CNI configuration, the Cilium agent/operator/config map, and a representative
 Cilium CRD together. The supported states are:
 
-- A genuinely empty CNI boundary installs the pinned release.
+- An empty meaningful CNI boundary installs the pinned release; the raw
+  directory may be empty or contain only the positively validated optional
+  Kubernetes package marker described above.
 
 - The exact deployed chart with byte-for-type-equivalent canonical values is
   validated without a Helm install or upgrade.

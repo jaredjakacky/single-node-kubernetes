@@ -1,0 +1,83 @@
+---
+- name: Inspect the optional Kubernetes CNI package sentinel
+  ansible.builtin.stat:
+    path: "{{ cilium_kubernetes_cni_keep_path }}"
+    follow: false
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
+  register: cilium_kubernetes_cni_keep
+  failed_when: false
+
+- name: Read package ownership for the Kubernetes CNI sentinel
+  ansible.builtin.command:
+    argv:
+      - "{{ cilium_dpkg_query_binary }}"
+      - --search
+      - "{{ cilium_kubernetes_cni_keep_path }}"
+  register: cilium_kubernetes_cni_keep_ownership
+  changed_when: false
+  failed_when: false
+  when: cilium_kubernetes_cni_keep.stat.exists | default(false)
+
+- name: Validate the optional Kubernetes CNI package sentinel
+  ansible.builtin.assert:
+    that:
+      - cilium_kubernetes_cni_keep.stat.isreg | default(false)
+      - not (cilium_kubernetes_cni_keep.stat.islnk | default(false))
+      - cilium_kubernetes_cni_keep.stat.size | default(-1) | int == 0
+      - cilium_kubernetes_cni_keep.stat.uid | default(-1) | int == 0
+      - cilium_kubernetes_cni_keep.stat.gid | default(-1) | int == 0
+      - cilium_kubernetes_cni_keep.stat.pw_name | default('') == 'root'
+      - cilium_kubernetes_cni_keep.stat.gr_name | default('') == 'root'
+      - >-
+        cilium_kubernetes_cni_keep.stat.mode | default('')
+        in ['0400', '0440', '0444', '0600', '0640', '0644']
+      - cilium_kubernetes_cni_keep_ownership.rc | default(1) | int == 0
+      - >-
+        cilium_kubernetes_cni_keep_ownership.stdout_lines
+        | default([])
+        | length == 1
+      - >-
+        cilium_kubernetes_cni_keep_ownership.stdout | default('')
+        is match(cilium_kubernetes_cni_keep_owner_pattern)
+    fail_msg: >-
+      {{ cilium_kubernetes_cni_keep_path }} is present but is not the exact
+      inert, root-owned, zero-byte sentinel recorded by the
+      {{ cilium_kubernetes_cni_package }} Debian package. Refusing to ignore,
+      repair, replace, or adopt it.
+  vars:
+    cilium_kubernetes_cni_keep_owner_pattern: >-
+      {{
+        '^'
+        ~ (cilium_kubernetes_cni_package | regex_escape)
+        ~ '(?::[a-z0-9][a-z0-9-]*)?: '
+        ~ (cilium_kubernetes_cni_keep_path | regex_escape)
+        ~ '$'
+      }}
+  when: cilium_kubernetes_cni_keep.stat.exists | default(false)
+
+# The package sentinel is excluded only after the preceding positive
+# filesystem and dpkg ownership validation has completed successfully.
+- name: Normalize raw, package-baseline, and meaningful CNI state
+  ansible.builtin.set_fact:
+    cilium_observed_cni_paths: >-
+      {{ cilium_cni_entries.files | map(attribute='path') | sort | list }}
+    cilium_observed_known_safe_cni_paths: >-
+      {{
+        [cilium_kubernetes_cni_keep_path]
+        if cilium_kubernetes_cni_keep.stat.exists | default(false)
+        else []
+      }}
+    cilium_observed_meaningful_cni_paths: >-
+      {{
+        cilium_cni_entries.files
+        | map(attribute='path')
+        | list
+        | difference(
+            [cilium_kubernetes_cni_keep_path]
+            if cilium_kubernetes_cni_keep.stat.exists | default(false)
+            else []
+          )
+        | sort
+      }}

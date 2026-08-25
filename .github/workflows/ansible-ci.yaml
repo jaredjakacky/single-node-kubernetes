@@ -96,6 +96,21 @@ jobs:
       - name: Test Cilium inputs, values, and lifecycle state
         run: ansible-playbook tests/cilium-contract.yml
 
+      - name: Test the real Kubernetes CNI package baseline
+        run: |
+          package_version="1.9.1-1.1"
+          package_path="/tmp/kubernetes-cni_${package_version}_amd64.deb"
+          package_url="https://pkgs.k8s.io/core:/stable:/v1.36/deb/amd64"
+          package_sha256="4cd72d8cef4499d3dc410874287b40e\
+          8b4241e0772938c5820cbee37986c1d93"
+          curl --fail --location --silent --show-error \
+            --output "${package_path}" \
+            "${package_url}/kubernetes-cni_${package_version}_amd64.deb"
+          echo "${package_sha256}  ${package_path}" \
+            | sha256sum --check
+          sudo /usr/bin/dpkg --install "${package_path}"
+          sudo "$(command -v ansible-playbook)" tests/cilium-cni-baseline.yml
+
       - name: Test bootstrap task-name rendering
         run: python tests/test_bootstrap_task_name_warnings.py
 

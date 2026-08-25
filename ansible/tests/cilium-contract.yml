@@ -214,18 +214,123 @@
               release_records: []
               expected_action: install
               should_fail: false
-            - name: unmanaged CNI is rejected
+            - name: validated Kubernetes CNI sentinel only installs
               release_records: []
               cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+              safe_cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+              meaningful_cni_paths: []
+              expected_action: install
+              should_fail: false
+            - name: sentinel plus unexpected CNI config is rejected
+              release_records: []
+              cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+                - /etc/cni/net.d/10-unexpected.conflist
+              safe_cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+              meaningful_cni_paths:
                 - /etc/cni/net.d/10-unexpected.conflist
               expected_action: refuse
               should_fail: true
-            - name: exact configured release only validates
+            - name: unexpected ordinary file is rejected
+              release_records: []
+              cni_paths:
+                - /etc/cni/net.d/README
+              expected_action: refuse
+              should_fail: true
+            - name: sentinel plus arbitrary hidden file is rejected
+              release_records: []
+              cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+                - /etc/cni/net.d/.unexpected
+              safe_cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+              meaningful_cni_paths:
+                - /etc/cni/net.d/.unexpected
+              expected_action: refuse
+              should_fail: true
+            - name: untrusted sentinel is rejected
+              release_records: []
+              cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+              expected_action: refuse
+              should_fail: true
+            - name: nonzero sentinel is rejected
+              release_records: []
+              cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+              expected_action: refuse
+              should_fail: true
+            - name: sentinel symlink is rejected
+              release_records: []
+              cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+              expected_action: refuse
+              should_fail: true
+            - name: unsafe sentinel ownership or mode is rejected
+              release_records: []
+              cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+              expected_action: refuse
+              should_fail: true
+            - name: managed Cilium config without sentinel validates
               release_records:
                 - present
               existing_chart_version: 1.20.1
               expected_action: validate
               should_fail: false
+            - name: managed Cilium config with sentinel validates
+              release_records:
+                - present
+              cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+                - /etc/cni/net.d/05-cilium.conflist
+              safe_cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+              meaningful_cni_paths:
+                - /etc/cni/net.d/05-cilium.conflist
+              existing_chart_version: 1.20.1
+              expected_action: validate
+              should_fail: false
+            - name: managed Cilium plus sentinel and third file is rejected
+              release_records:
+                - present
+              cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+                - /etc/cni/net.d/05-cilium.conflist
+                - /etc/cni/net.d/unexpected
+              safe_cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+              meaningful_cni_paths:
+                - /etc/cni/net.d/05-cilium.conflist
+                - /etc/cni/net.d/unexpected
+              existing_chart_version: 1.20.1
+              expected_action: refuse
+              should_fail: true
+            - name: stale Cilium config without release is rejected
+              release_records: []
+              cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+                - /etc/cni/net.d/05-cilium.conflist
+              safe_cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+              meaningful_cni_paths:
+                - /etc/cni/net.d/05-cilium.conflist
+              expected_action: refuse
+              should_fail: true
+            - name: sentinel plus Cilium resource drift is rejected
+              release_records: []
+              cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+              safe_cni_paths:
+                - /etc/cni/net.d/.kubernetes-cni-keep
+              meaningful_cni_paths: []
+              resource_names:
+                - daemonset.apps/cilium
+              expected_action: refuse
+              should_fail: true
             - name: authorized older patch upgrades
               release_records:
                 - present

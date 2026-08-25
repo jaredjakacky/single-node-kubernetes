@@ -1,0 +1,172 @@
+---
+- name: Test the installed Kubernetes CNI package baseline
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    cilium_test_keep_path: /etc/cni/net.d/.kubernetes-cni-keep
+    cilium_test_config_path: /etc/cni/net.d/05-cilium.conflist
+    cilium_test_unexpected_path: /etc/cni/net.d/unexpected
+
+  tasks:
+    - name: Exercise the real installed package sentinel
+      block:
+        - name: Normalize the exact package-installed sentinel
+          ansible.builtin.include_tasks: tasks/cilium-cni-normalization-case.yml
+          vars:
+            cilium_test_cni_case:
+              name: exact package sentinel
+              raw_paths:
+                - "{{ cilium_test_keep_path }}"
+              safe_paths:
+                - "{{ cilium_test_keep_path }}"
+              meaningful_paths: []
+              should_fail: false
+
+        - name: Add an unexpected ordinary CNI-boundary file
+          ansible.builtin.copy:
+            content: unexpected
+            dest: "{{ cilium_test_unexpected_path }}"
+            owner: root
+            group: root
+            mode: "0600"
+
+        - name: Keep an unexpected ordinary file meaningful
+          ansible.builtin.include_tasks: tasks/cilium-cni-normalization-case.yml
+          vars:
+            cilium_test_cni_case:
+              name: sentinel plus unexpected ordinary file
+              raw_paths:
+                - "{{ cilium_test_keep_path }}"
+                - "{{ cilium_test_unexpected_path }}"
+              safe_paths:
+                - "{{ cilium_test_keep_path }}"
+              meaningful_paths:
+                - "{{ cilium_test_unexpected_path }}"
+              should_fail: false
+
+        - name: Remove the unexpected CNI-boundary fixture
+          ansible.builtin.file:
+            path: "{{ cilium_test_unexpected_path }}"
+            state: absent
+
+        - name: Put nonzero contents in the sentinel fixture
+          ansible.builtin.copy:
+            content: modified
+            dest: "{{ cilium_test_keep_path }}"
+            owner: root
+            group: root
+            mode: "0644"
+
+        - name: Reject a nonzero sentinel
+          ansible.builtin.include_tasks: tasks/cilium-cni-normalization-case.yml
+          vars:
+            cilium_test_cni_case:
+              name: nonzero sentinel
+              should_fail: true
+
+        - name: Restore the empty sentinel fixture
+          ansible.builtin.copy:
+            content: ""
+            dest: "{{ cilium_test_keep_path }}"
+            owner: root
+            group: root
+            mode: "0644"
+
+        - name: Give the sentinel an unsafe mode
+          ansible.builtin.file:
+            path: "{{ cilium_test_keep_path }}"
+            mode: "0664"
+
+        - name: Reject a group-writable sentinel
+          ansible.builtin.include_tasks: tasks/cilium-cni-normalization-case.yml
+          vars:
+            cilium_test_cni_case:
+              name: group-writable sentinel
+              should_fail: true
+
+        - name: Give the sentinel unsafe ownership
+          ansible.builtin.file:
+            path: "{{ cilium_test_keep_path }}"
+            owner: "65534"
+            group: "65534"
+            mode: "0644"
+
+        - name: Reject a non-root-owned sentinel
+          ansible.builtin.include_tasks: tasks/cilium-cni-normalization-case.yml
+          vars:
+            cilium_test_cni_case:
+              name: non-root-owned sentinel
+              should_fail: true
+
+        - name: Remove the unsafe sentinel fixture
+          ansible.builtin.file:
+            path: "{{ cilium_test_keep_path }}"
+            state: absent
+
+        - name: Replace the sentinel with a symlink
+          ansible.builtin.file:
+            src: /dev/null
+            dest: "{{ cilium_test_keep_path }}"
+            state: link
+
+        - name: Reject a sentinel symlink
+          ansible.builtin.include_tasks: tasks/cilium-cni-normalization-case.yml
+          vars:
+            cilium_test_cni_case:
+              name: sentinel symlink
+              should_fail: true
+
+        - name: Remove the sentinel symlink fixture
+          ansible.builtin.file:
+            path: "{{ cilium_test_keep_path }}"
+            state: absent
+
+        - name: Recreate a package-owned sentinel before ownership testing
+          ansible.builtin.copy:
+            content: ""
+            dest: "{{ cilium_test_keep_path }}"
+            owner: root
+            group: root
+            mode: "0644"
+
+        - name: Remove the test-installed Kubernetes CNI package
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/dpkg
+              - --remove
+              - kubernetes-cni
+          changed_when: true
+
+        - name: Recreate the CNI directory for the unowned fixture
+          ansible.builtin.file:
+            path: /etc/cni/net.d
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Recreate an unowned sentinel-shaped file
+          ansible.builtin.copy:
+            content: ""
+            dest: "{{ cilium_test_keep_path }}"
+            owner: root
+            group: root
+            mode: "0644"
+
+        - name: Reject a sentinel not owned by kubernetes-cni
+          ansible.builtin.include_tasks: tasks/cilium-cni-normalization-case.yml
+          vars:
+            cilium_test_cni_case:
+              name: unowned sentinel-shaped file
+              should_fail: true
+      always:
+        - name: Remove runtime CNI test files
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ cilium_test_config_path }}"
+            - "{{ cilium_test_unexpected_path }}"
+            - "{{ cilium_test_keep_path }}"
