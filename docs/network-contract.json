@@ -1,0 +1,100 @@
+{
+  "contract_version": 1,
+  "scope": "architecture-only",
+  "address_plan": {
+    "ip_family": "ipv4",
+    "kubernetes_service_cidr": "10.96.0.0/12",
+    "current_cluster_pod_cidr": "10.200.0.0/16",
+    "per_node_pod_cidr_prefix": 24,
+    "future_hetzner_private_node_network": "10.10.0.0/16",
+    "cluster_pod_cidr_reservation": "10.200.0.0/13",
+    "future_cluster_pod_cidrs": [
+      "10.201.0.0/16",
+      "10.202.0.0/16",
+      "10.203.0.0/16",
+      "10.204.0.0/16",
+      "10.205.0.0/16",
+      "10.206.0.0/16",
+      "10.207.0.0/16"
+    ]
+  },
+  "initial_cilium": {
+    "ipv4_enabled": true,
+    "ipv6_enabled": false,
+    "ipam_mode": "cluster-pool",
+    "routing_mode": "tunnel",
+    "tunnel_protocol": "vxlan",
+    "ipv4_masquerade": true,
+    "bpf_masquerade": false,
+    "operator_replicas": 1,
+    "deferred_features": {
+      "hubble": false,
+      "hubble_relay": false,
+      "wireguard_transparent_encryption": false,
+      "gateway_api": false,
+      "cilium_ingress": false,
+      "bgp_control_plane": false,
+      "clustermesh": false,
+      "kube_proxy_replacement": false,
+      "big_tcp": false
+    }
+  },
+  "future_ansible_role_inputs": {
+    "cilium_cluster_name": {
+      "type": "string",
+      "required": true,
+      "default": null,
+      "source": "private_live_inventory",
+      "lifecycle": "permanent_once_deployed",
+      "maximum_length": 32,
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$",
+      "forbidden_sources": [
+        "node_hostname",
+        "current_topology"
+      ],
+      "forbidden_substrings": [
+        "single-node"
+      ]
+    },
+    "cilium_cluster_id": {
+      "type": "integer",
+      "required": true,
+      "default": null,
+      "source": "private_live_inventory",
+      "lifecycle": "permanent_once_deployed",
+      "minimum": 1,
+      "maximum": 255
+    },
+    "cilium_cluster_pool_ipv4_cidr": {
+      "type": "ipv4_cidr",
+      "required": true,
+      "default": "10.200.0.0/16"
+    },
+    "cilium_cluster_pool_ipv4_mask_size": {
+      "type": "integer",
+      "required": true,
+      "default": 24
+    },
+    "cilium_chart_version": {
+      "type": "exact_version",
+      "required": true,
+      "default": null
+    },
+    "cilium_routing_mode": {
+      "type": "string",
+      "required": true,
+      "default": "tunnel",
+      "allowed": [
+        "tunnel"
+      ]
+    },
+    "cilium_tunnel_protocol": {
+      "type": "string",
+      "required": true,
+      "default": "vxlan",
+      "allowed": [
+        "vxlan"
+      ]
+    }
+  }
+}

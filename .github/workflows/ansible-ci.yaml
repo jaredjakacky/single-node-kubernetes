@@ -43,6 +43,10 @@ jobs:
         working-directory: .
         run: python tests/test_verify_workflow_policy.py
 
+      - name: Test Kubernetes network architecture contract
+        working-directory: .
+        run: python tests/test_network_architecture.py
+
       - name: Install Ansible collections
         run: ansible-galaxy collection install -r requirements.yml
 

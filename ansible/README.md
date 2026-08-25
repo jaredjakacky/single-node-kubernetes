@@ -28,6 +28,11 @@ fails early if the running architecture, kernel, cgroup v2 hierarchy, eBPF and
 BTF support, tunnel and policy-routing support, required netfilter/IP-set
 modules, or active IPv4 forwarding cannot support that design.
 
+The detailed [Kubernetes and Cilium network architecture](../docs/network-architecture.md)
+defines the non-overlapping address plan, VXLAN and cluster-pool IPAM choices,
+deferred features, permanent identity requirements, and future public-role
+input contract. It is an architecture boundary, not a deployment procedure.
+
 The base role continues to own cgroup v2 and IPv4 forwarding. Debian's kernel
 owns the required built-in capabilities and loadable modules; the Cilium host
 role validates them without preloading or persisting modules. Cilium will own
@@ -188,6 +193,7 @@ checks with:
 
 ```sh
 python -m pip install -r ansible/requirements.txt
+python tests/test_network_architecture.py
 cd ansible
 ansible-galaxy collection install -r requirements.yml
 ansible-lint
