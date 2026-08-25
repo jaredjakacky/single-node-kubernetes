@@ -109,3 +109,6 @@
       loop_control:
         loop_var: cilium_test_workload_case
         label: "{{ cilium_test_workload_case.name }}"
+
+- name: Exercise the real pinned Cilium chart regression
+  ansible.builtin.import_playbook: cilium-real-chart.yml
