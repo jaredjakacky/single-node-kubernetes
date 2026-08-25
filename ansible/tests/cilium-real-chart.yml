@@ -1,0 +1,133 @@
+---
+- name: Test the real pinned Cilium chart through production assertions
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    cilium_cluster_name: ci-eu-1
+    cilium_cluster_id: 1
+    cilium_release_action: install
+
+  tasks:
+    - name: Require the CI-pinned Ansible runtime
+      ansible.builtin.assert:
+        that:
+          - ansible_version.full == '2.21.3'
+        fail_msg: >-
+          The real Cilium chart regression must run with the repository's
+          pinned ansible-core 2.21.3 runtime.
+
+    - name: Require the checksum-verified Helm test binary
+      ansible.builtin.assert:
+        that:
+          - cilium_test_helm_binary is defined
+          - cilium_test_helm_binary is string
+          - cilium_test_helm_binary | length > 0
+        fail_msg: >-
+          The real Cilium chart regression requires the checksum-verified
+          pinned Helm binary supplied by CI.
+
+    - name: Inspect the checksum-verified Helm test binary
+      ansible.builtin.stat:
+        path: "{{ cilium_test_helm_binary }}"
+      register: cilium_test_helm_binary_stat
+
+    - name: Require the Helm test binary to exist
+      ansible.builtin.assert:
+        that:
+          - cilium_test_helm_binary_stat.stat.exists
+          - cilium_test_helm_binary_stat.stat.isreg
+        fail_msg: >-
+          The real Cilium chart regression requires an existing regular Helm
+          binary.
+
+    - name: Define the exact production Cilium values
+      ansible.builtin.include_role:
+        name: cilium
+        tasks_from: define_values
+        public: true
+
+    - name: Create the isolated real-chart test directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: cilium-real-chart-
+      register: cilium_real_chart_directory
+
+    - name: Exercise the real immutable chart without cluster mutation
+      block:
+        - name: Override only test filesystem paths
+          ansible.builtin.set_fact:
+            cilium_helm_binary: "{{ cilium_test_helm_binary }}"
+            cilium_values_path: >-
+              {{ cilium_real_chart_directory.path }}/cilium-values.json
+            cilium_helm_environment:
+              HELM_CACHE_HOME: >-
+                {{ cilium_real_chart_directory.path }}/helm-cache
+              HELM_CONFIG_HOME: >-
+                {{ cilium_real_chart_directory.path }}/helm-config
+              HELM_DATA_HOME: >-
+                {{ cilium_real_chart_directory.path }}/helm-data
+
+        - name: Create isolated Helm state directories
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            mode: "0700"
+          loop:
+            - "{{ cilium_helm_environment.HELM_CACHE_HOME }}"
+            - "{{ cilium_helm_environment.HELM_CONFIG_HOME }}"
+            - "{{ cilium_helm_environment.HELM_DATA_HOME }}"
+
+        - name: Render the source-controlled production Cilium values
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../roles/cilium/templates/values.json.j2"
+            dest: "{{ cilium_values_path }}"
+            mode: "0600"
+
+        - name: Inspect the real immutable Cilium chart metadata
+          ansible.builtin.command:
+            argv:
+              - "{{ cilium_helm_binary }}"
+              - show
+              - chart
+              - "{{ cilium_chart_oci_repository }}@{{ cilium_chart_digest }}"
+          environment: "{{ cilium_helm_environment }}"
+          register: cilium_chart_metadata
+          changed_when: false
+
+        - name: Run the production chart metadata assertions
+          ansible.builtin.include_role:
+            name: cilium
+            tasks_from: validate_chart_metadata
+            public: true
+
+        - name: Render the real immutable Cilium chart
+          ansible.builtin.command:
+            argv:
+              - "{{ cilium_helm_binary }}"
+              - template
+              - "{{ cilium_release_name }}"
+              - "{{ cilium_chart_oci_repository }}@{{ cilium_chart_digest }}"
+              - --namespace
+              - "{{ cilium_release_namespace }}"
+              - --values
+              - "{{ cilium_values_path }}"
+              - --kube-version
+              - 1.36.0
+          environment: "{{ cilium_helm_environment }}"
+          register: cilium_chart_template_output
+          changed_when: false
+
+        - name: Run the production rendered-workload assertions
+          ansible.builtin.include_role:
+            name: cilium
+            tasks_from: validate_rendered_workloads
+            public: true
+      always:
+        - name: Remove the isolated real-chart test directory
+          ansible.builtin.file:
+            path: "{{ cilium_real_chart_directory.path }}"
+            state: absent
+          when:
+            - cilium_real_chart_directory is defined
+            - cilium_real_chart_directory.path is defined
