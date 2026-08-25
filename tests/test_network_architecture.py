@@ -4,10 +4,14 @@
 
 from __future__ import annotations
 
+import ast
+import copy
+import hashlib
 import ipaddress
 import json
 import pathlib
 import re
+from collections.abc import Callable
 from typing import Any
 
 import yaml
@@ -68,11 +72,40 @@ ALLOWED_CILIUM_HOST_MODULES = {
     "ansible.builtin.slurp",
     "ansible.builtin.stat",
 }
+ANSIBLE_MODULE_KEY = re.compile(
+    r"^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$"
+)
+APPROVED_MODINFO_ARGV_PREFIX = (
+    "/sbin/modinfo",
+    "--field",
+    "filename",
+)
+# Hash the parsed probe so YAML/Python formatting may change without approving new behavior.
+APPROVED_BPF_PROBE_AST_SHA256 = (
+    "b1cfa9fb6bb94b362b5ae0df5a0aab0f12db993c3cd593b5e9ea3aade0496614"
+)
+APPROVED_CILIUM_HOST_COMMAND_KINDS = ["modinfo", "bpf_syscall_probe"]
 
 
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def require_validation_failure(
+    name: str,
+    validation: Callable[[], object],
+    expected_message: str,
+) -> None:
+    try:
+        validation()
+    except AssertionError as error:
+        require(
+            expected_message in str(error),
+            f"{name} failed for the wrong reason: {error}",
+        )
+        return
+    raise AssertionError(f"{name} unexpectedly passed validation")
 
 
 def load_json_object(path: pathlib.Path) -> dict[str, Any]:
@@ -266,14 +299,33 @@ def validate_future_role_contract(contract: dict[str, Any]) -> None:
         "role node mask default must match the address plan",
     )
 
+    initial_cilium = contract["initial_cilium"]
+    routing_mode = inputs["cilium_routing_mode"]
+    tunnel_protocol = inputs["cilium_tunnel_protocol"]
+    require(
+        routing_mode["default"] == initial_cilium["routing_mode"],
+        "role routing default must match the initial Cilium routing mode",
+    )
+    require(
+        routing_mode["allowed"] == [initial_cilium["routing_mode"]],
+        "role routing choices must contain only the initial Cilium routing mode",
+    )
+    require(
+        tunnel_protocol["default"] == initial_cilium["tunnel_protocol"],
+        "role tunnel default must match the initial Cilium tunnel protocol",
+    )
+    require(
+        tunnel_protocol["allowed"] == [initial_cilium["tunnel_protocol"]],
+        "role tunnel choices must contain only the initial Cilium tunnel protocol",
+    )
+
 
 def task_module_names(value: object) -> set[str]:
     if isinstance(value, dict):
         names = {
             key
             for key in value
-            if isinstance(key, str)
-            and key.startswith(("ansible.builtin.", "kubernetes.core."))
+            if isinstance(key, str) and ANSIBLE_MODULE_KEY.fullmatch(key) is not None
         }
         for nested in value.values():
             names.update(task_module_names(nested))
@@ -284,6 +336,79 @@ def task_module_names(value: object) -> set[str]:
             names.update(task_module_names(nested))
         return names
     return set()
+
+
+def command_module_arguments(
+    value: object,
+    reference: str,
+) -> list[tuple[str, object]]:
+    if isinstance(value, dict):
+        commands = []
+        for key, nested in value.items():
+            nested_reference = f"{reference}.{key}"
+            if key == "ansible.builtin.command":
+                commands.append((nested_reference, nested))
+            else:
+                commands.extend(command_module_arguments(nested, nested_reference))
+        return commands
+    if isinstance(value, list):
+        commands = []
+        for index, nested in enumerate(value):
+            commands.extend(command_module_arguments(nested, f"{reference}[{index}]"))
+        return commands
+    return []
+
+
+def cilium_host_command_kind(command: object, reference: str) -> str:
+    require(
+        isinstance(command, dict),
+        f"{reference} must use structured command module arguments",
+    )
+    require(
+        set(command) == {"argv"},
+        f"{reference} may set only argv, got {sorted(command)}",
+    )
+    argv = command["argv"]
+    require(
+        isinstance(argv, list) and all(isinstance(value, str) for value in argv),
+        f"{reference}.argv must be a string list",
+    )
+
+    if (
+        len(argv) == 4
+        and tuple(argv[:3]) == APPROVED_MODINFO_ARGV_PREFIX
+        and re.sub(r"\s+", "", argv[3]) == "{{item.module}}"
+    ):
+        return "modinfo"
+
+    if (
+        len(argv) == 3
+        and re.sub(r"\s+", "", argv[0]) == "{{ansible_facts.python.executable}}"
+        and argv[1] == "-c"
+    ):
+        try:
+            probe_ast = ast.dump(
+                ast.parse(argv[2]), annotate_fields=True, include_attributes=False
+            )
+        except SyntaxError as error:
+            raise AssertionError(
+                f"{reference} BPF probe body is not valid Python"
+            ) from error
+        probe_sha256 = hashlib.sha256(probe_ast.encode("utf-8")).hexdigest()
+        require(
+            probe_sha256 == APPROVED_BPF_PROBE_AST_SHA256,
+            f"{reference} BPF probe body is not the explicitly approved probe",
+        )
+        return "bpf_syscall_probe"
+
+    raise AssertionError(f"{reference} invokes an unapproved command: {argv!r}")
+
+
+def cilium_host_command_kinds(value: object, reference: str) -> list[str]:
+    return [
+        cilium_host_command_kind(command, command_reference)
+        for command_reference, command in command_module_arguments(value, reference)
+    ]
 
 
 def validate_repository_boundaries(contract: dict[str, Any]) -> None:
@@ -318,6 +443,7 @@ def validate_repository_boundaries(contract: dict[str, Any]) -> None:
         cilium_host_main[0].get("ansible.builtin.import_tasks") == "validate.yml",
         "cilium_host must import prerequisite validation only",
     )
+    command_kinds = []
     for path in sorted(CILIUM_HOST_TASKS_PATH.glob("*.yml")):
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
         unexpected = task_module_names(document) - ALLOWED_CILIUM_HOST_MODULES
@@ -326,9 +452,15 @@ def validate_repository_boundaries(contract: dict[str, Any]) -> None:
             f"{path.relative_to(REPOSITORY_ROOT)} has operational modules: "
             f"{sorted(unexpected)}",
         )
-        lowered = path.read_text(encoding="utf-8").casefold()
-        require("cilium install" not in lowered, f"{path} must not install Cilium")
-        require("helm" not in lowered, f"{path} must not invoke Helm")
+        command_kinds.extend(
+            cilium_host_command_kinds(document, str(path.relative_to(REPOSITORY_ROOT)))
+        )
+
+    require(
+        command_kinds == APPROVED_CILIUM_HOST_COMMAND_KINDS,
+        "cilium_host command tasks must be exactly the approved modinfo and BPF "
+        f"probes, got {command_kinds}",
+    )
 
     require(
         not (REPOSITORY_ROOT / "ansible" / "roles" / "cilium").exists(),
@@ -340,6 +472,73 @@ def validate_repository_boundaries(contract: dict[str, Any]) -> None:
     )
 
 
+def validate_regression_guards(contract: dict[str, Any]) -> None:
+    require_validation_failure(
+        "arbitrary cilium_host command regression",
+        lambda: cilium_host_command_kinds(
+            [
+                {
+                    "name": "Nested operational block fixture",
+                    "block": [
+                        {
+                            "name": "Apply an unapproved manifest",
+                            "ansible.builtin.command": {
+                                "argv": [
+                                    "/usr/bin/kubectl",
+                                    "apply",
+                                    "--filename",
+                                    "cilium.yml",
+                                ]
+                            },
+                        }
+                    ],
+                }
+            ],
+            "unapproved command fixture",
+        ),
+        "invokes an unapproved command",
+    )
+    require_validation_failure(
+        "modified Python probe regression",
+        lambda: cilium_host_command_kind(
+            {
+                "argv": [
+                    "{{ ansible_facts.python.executable }}",
+                    "-c",
+                    "import subprocess; subprocess.run(['kubectl', 'apply'])",
+                ]
+            },
+            "unapproved Python probe fixture",
+        ),
+        "BPF probe body is not the explicitly approved probe",
+    )
+
+    drift_cases = (
+        ("routing default", "cilium_routing_mode", "default", "native"),
+        (
+            "routing allowed values",
+            "cilium_routing_mode",
+            "allowed",
+            ["tunnel", "native"],
+        ),
+        ("tunnel default", "cilium_tunnel_protocol", "default", "geneve"),
+        (
+            "tunnel allowed values",
+            "cilium_tunnel_protocol",
+            "allowed",
+            ["vxlan", "geneve"],
+        ),
+    )
+    for name, input_name, field, value in drift_cases:
+        drifted_contract = copy.deepcopy(contract)
+        drifted_contract["future_ansible_role_inputs"][input_name][field] = value
+        require_validation_failure(
+            f"{name} regression",
+            lambda fixture=drifted_contract: validate_future_role_contract(fixture),
+            "must match" if field == "default" else "must contain only",
+        )
+
+
 def main() -> None:
     contract = load_json_object(CONTRACT_PATH)
     require(contract["contract_version"] == 1, "unsupported network contract version")
@@ -348,6 +547,7 @@ def main() -> None:
     validate_initial_cilium_contract(contract)
     validate_future_role_contract(contract)
     validate_repository_boundaries(contract)
+    validate_regression_guards(contract)
     print(
         "Network architecture contract passed: IPv4 CIDRs disjoint, "
         "Cilium features deferred, deployment boundary intact"
