@@ -21,6 +21,9 @@ cilium_values_path: /etc/single-node-kubernetes/cilium-values.json
 cilium_release_name: cilium
 cilium_release_namespace: kube-system
 cilium_expected_cni_config_path: /etc/cni/net.d/05-cilium.conflist
+cilium_kubernetes_cni_keep_path: /etc/cni/net.d/.kubernetes-cni-keep
+cilium_kubernetes_cni_package: kubernetes-cni
+cilium_dpkg_query_binary: /usr/bin/dpkg-query
 
 # Kubernetes v1.36.4's own e2e image pin. The multi-architecture manifest
 # digest prevents a mutable tag from changing the validation workload.

@@ -20,16 +20,33 @@
                 else []
               )
           }}
+        cilium_observed_known_safe_cni_paths: >-
+          {{ cilium_test_state_case.safe_cni_paths | default([]) }}
+        cilium_observed_meaningful_cni_paths: >-
+          {{
+            cilium_test_state_case.meaningful_cni_paths
+            | default(
+                cilium_test_state_case.cni_paths
+                | default(
+                    ['/etc/cni/net.d/05-cilium.conflist']
+                    if cilium_test_state_case.release_records | length == 1
+                    else []
+                  )
+              )
+          }}
         cilium_observed_resource_names: >-
           {{
-            [
-              'daemonset.apps/cilium',
-              'deployment.apps/cilium-operator',
-              'configmap/cilium-config',
-              'customresourcedefinition.apiextensions.k8s.io/ciliumnodes.cilium.io'
-            ]
-            if cilium_test_state_case.release_records | length == 1
-            else []
+            cilium_test_state_case.resource_names
+            | default(
+                [
+                  'daemonset.apps/cilium',
+                  'deployment.apps/cilium-operator',
+                  'configmap/cilium-config',
+                  'customresourcedefinition.apiextensions.k8s.io/ciliumnodes.cilium.io'
+                ]
+                if cilium_test_state_case.release_records | length == 1
+                else []
+              )
           }}
         cilium_observed_representative_resource_names: >-
           {{

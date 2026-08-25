@@ -24,6 +24,9 @@
     recurse: false
   register: cilium_cni_entries
 
+- name: Normalize the CNI configuration boundary
+  ansible.builtin.import_tasks: normalize_cni_state.yml
+
 - name: Inspect the Cilium DaemonSet
   ansible.builtin.command:
     argv:
@@ -136,8 +139,6 @@
 - name: Normalize observed Cilium state
   ansible.builtin.set_fact:
     cilium_release_records: "{{ cilium_helm_list_output.stdout | from_json }}"
-    cilium_observed_cni_paths: >-
-      {{ cilium_cni_entries.files | map(attribute='path') | sort | list }}
     cilium_observed_representative_resource_names: >-
       {{
         [
@@ -177,24 +178,38 @@
       Helm returned an invalid or ambiguous release set for Cilium:
       {{ cilium_release_records | to_nice_json }}
 
+- name: Select the managed Cilium CNI entry by exact path
+  ansible.builtin.set_fact:
+    cilium_managed_cni_entries: >-
+      {{
+        cilium_cni_entries.files
+        | selectattr('path', 'equalto', cilium_expected_cni_config_path)
+        | list
+      }}
+  when: cilium_release_records | length == 1
+
 - name: Require one managed Cilium CNI file
   ansible.builtin.assert:
     that:
-      - cilium_cni_entries.files | length == 1
-      - cilium_observed_cni_paths == [cilium_expected_cni_config_path]
+      - cilium_managed_cni_entries | length == 1
+      - >-
+        cilium_observed_meaningful_cni_paths
+        == [cilium_expected_cni_config_path]
     fail_msg: >-
-      A managed Cilium release must own only
-      {{ cilium_expected_cni_config_path }} in /etc/cni/net.d.
+      A managed Cilium release must own exactly
+      {{ cilium_expected_cni_config_path }} as meaningful CNI state. The only
+      additional supported entry is the positively validated optional
+      {{ cilium_kubernetes_cni_keep_path }} package sentinel.
   when: cilium_release_records | length == 1
 
 - name: Validate managed Cilium CNI file metadata
   ansible.builtin.assert:
     that:
-      - cilium_cni_entries.files[0].isreg
-      - not cilium_cni_entries.files[0].islnk
-      - cilium_cni_entries.files[0].pw_name == 'root'
-      - cilium_cni_entries.files[0].gr_name == 'root'
-      - cilium_cni_entries.files[0].mode in ['0600', '0640', '0644']
+      - cilium_managed_cni_entries[0].isreg
+      - not cilium_managed_cni_entries[0].islnk
+      - cilium_managed_cni_entries[0].pw_name == 'root'
+      - cilium_managed_cni_entries[0].gr_name == 'root'
+      - cilium_managed_cni_entries[0].mode in ['0600', '0640', '0644']
     fail_msg: >-
       The managed Cilium CNI file must be a root-owned, non-writable-by-group-
       or-other regular file, never a symlink.
