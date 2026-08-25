@@ -1,0 +1,14 @@
+---
+- name: Demonstrate supported conditional forms
+  ansible.builtin.assert:
+    that:
+      - >-
+        cilium_chart_metadata.stdout
+        is search('(?m)^name: cilium$')
+      - cilium_chart_metadata.stdout | length > 0
+  when:
+    - cilium_release_action in ['install', 'upgrade']
+    - cilium_chart_metadata is defined
+  until: cilium_chart_metadata is succeeded
+  failed_when: cilium_chart_metadata.rc != 0
+  changed_when: false

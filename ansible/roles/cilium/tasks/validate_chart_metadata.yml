@@ -1,0 +1,25 @@
+---
+- name: Require the exact pinned Cilium chart metadata
+  ansible.builtin.assert:
+    that:
+      - >-
+        cilium_chart_metadata.stdout
+        is search('(?m)^name: cilium$')
+      - >-
+        cilium_chart_metadata.stdout
+        is search(
+          "(?m)^version: (?P<quote>['\"]?)"
+          ~ (cilium_chart_version | regex_escape)
+          ~ "(?P=quote)$"
+        )
+      - >-
+        cilium_chart_metadata.stdout
+        is search(
+          "(?m)^appVersion: (?P<quote>['\"]?)"
+          ~ (cilium_chart_version | regex_escape)
+          ~ "(?P=quote)$"
+        )
+    fail_msg: >-
+      The immutable OCI digest did not resolve to the expected Cilium
+      {{ cilium_chart_version }} chart and application metadata.
+  when: cilium_release_action in ['install', 'upgrade']

@@ -1,0 +1,5 @@
+---
+- name: Demonstrate a YAML mapping disguised as an assertion expression
+  ansible.builtin.assert:
+    that:
+      - cilium_chart_metadata.stdout is search('(?m)^name: cilium$')
