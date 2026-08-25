@@ -1,0 +1,28 @@
+---
+- name: Deploy and validate Cilium
+  hosts: kubernetes_control_plane
+  gather_facts: true
+  become: true
+  serial: 1
+
+  pre_tasks:
+    - name: Refuse the Cilium lifecycle in Ansible check mode
+      ansible.builtin.assert:
+        that:
+          - not ansible_check_mode
+        fail_msg: >-
+          Cilium state detection, deployment, and runtime validation cannot be
+          represented safely in Ansible check mode. Run this playbook without
+          --check.
+
+    - name: Require exactly one control-plane host
+      ansible.builtin.assert:
+        that:
+          - groups['kubernetes_control_plane'] | length == 1
+        fail_msg: >-
+          This lifecycle supports exactly one Kubernetes control-plane host.
+          The kubernetes_control_plane inventory group contains
+          {{ groups['kubernetes_control_plane'] | length }} hosts.
+
+  roles:
+    - role: cilium

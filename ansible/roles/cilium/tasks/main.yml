@@ -1,0 +1,51 @@
+---
+# mkdir is used deliberately because ansible.builtin.file cannot atomically
+# refuse an existing directory created by another Ansible controller.
+- name: Acquire the Cilium lifecycle lock # noqa command-instead-of-module
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/mkdir
+      - --
+      - "{{ cilium_lifecycle_lock_directory }}"
+  register: cilium_lock_acquisition
+  changed_when: false
+  failed_when: false
+
+- name: Refuse a concurrent or abandoned Cilium lifecycle
+  ansible.builtin.fail:
+    msg: >-
+      Cannot acquire {{ cilium_lifecycle_lock_directory }}. Another Cilium
+      lifecycle may be active, or a previous controller may have terminated
+      without releasing its lock. Confirm that no lifecycle is running before
+      removing an abandoned lock manually.
+  when: cilium_lock_acquisition.rc != 0
+
+- name: Initialize Cilium lifecycle state
+  ansible.builtin.set_fact:
+    cilium_validation_namespace_created: false
+  when: cilium_lock_acquisition.rc == 0
+
+- name: Run the locked Cilium lifecycle
+  when: cilium_lock_acquisition.rc == 0
+  block:
+    - name: Run Cilium state management and validation
+      ansible.builtin.import_tasks: lifecycle.yml
+  rescue:
+    - name: Collect Cilium lifecycle diagnostics
+      ansible.builtin.import_tasks: diagnostics.yml
+
+    - name: Report the failed Cilium lifecycle
+      ansible.builtin.fail:
+        msg: >-
+          The Cilium lifecycle failed. Review the original failed task and the
+          diagnostics emitted immediately above. No kubeadm reset, CNI removal,
+          or destructive Cilium cleanup was attempted.
+  always:
+    - name: Clean temporary Cilium validation resources
+      ansible.builtin.import_tasks: cleanup.yml
+
+    - name: Release the Cilium lifecycle lock
+      ansible.builtin.file:
+        path: "{{ cilium_lifecycle_lock_directory }}"
+        state: absent
+      changed_when: false

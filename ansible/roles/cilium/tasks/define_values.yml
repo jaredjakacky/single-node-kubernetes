@@ -1,0 +1,62 @@
+---
+- name: Define the exact Cilium Helm values
+  ansible.builtin.set_fact:
+    cilium_desired_values:
+      cluster:
+        id: "{{ cilium_cluster_id }}"
+        name: "{{ cilium_cluster_name }}"
+      ipv4:
+        enabled: true
+      ipv6:
+        enabled: false
+      ipam:
+        mode: cluster-pool
+        operator:
+          clusterPoolIPv4PodCIDRList:
+            - "{{ cilium_cluster_pool_ipv4_cidr }}"
+          clusterPoolIPv4MaskSize: "{{ cilium_cluster_pool_ipv4_mask_size }}"
+      routingMode: "{{ cilium_routing_mode }}"
+      tunnelProtocol: "{{ cilium_tunnel_protocol }}"
+      kubeProxyReplacement: "false"
+      waitForKubeProxy: true
+      cleanBpfState: false
+      cleanState: false
+      bpf:
+        autoMount:
+          enabled: true
+        masquerade: false
+      enableIPv4Masquerade: true
+      enableIPv6Masquerade: false
+      k8sNetworkPolicy:
+        enabled: true
+      k8sClusterNetworkPolicy:
+        enabled: false
+      policyEnforcementMode: default
+      l7Proxy: false
+      operator:
+        enabled: true
+        replicas: 1
+      cni:
+        install: true
+        exclusive: true
+        uninstall: false
+      hubble:
+        enabled: false
+        relay:
+          enabled: false
+      gatewayAPI:
+        enabled: false
+      ingressController:
+        enabled: false
+      bgpControlPlane:
+        enabled: false
+      encryption:
+        enabled: false
+      clustermesh:
+        config:
+          enabled: false
+        useAPIServer: false
+      enableIPv4BIGTCP: false
+      enableIPv6BIGTCP: false
+      envoy:
+        enabled: false

@@ -1,0 +1,224 @@
+---
+- name: Test the Cilium input and rendered-values contract
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  tasks:
+    - name: Exercise Cilium input validation cases
+      ansible.builtin.include_tasks: tasks/cilium-input-case.yml
+      loop:
+        - name: valid production inputs
+          should_fail: false
+        - name: missing cluster name
+          cluster_name: ""
+          should_fail: true
+        - name: topology-derived cluster name
+          cluster_name: single-node-production
+          should_fail: true
+        - name: invalid cluster ID
+          cluster_id: 0
+          should_fail: true
+        - name: malformed Pod CIDR
+          pod_cidr: 10.200.1.0/16
+          should_fail: true
+        - name: IPv6 Pod CIDR
+          pod_cidr: fd00:200::/64
+          should_fail: true
+        - name: overlapping Pod and Service CIDRs
+          pod_cidr: 10.96.0.0/12
+          should_fail: true
+        - name: unsupported node allocation mask
+          mask_size: 25
+          should_fail: true
+        - name: deferred native routing
+          routing_mode: native
+          should_fail: true
+        - name: deferred Geneve tunnel
+          tunnel_protocol: geneve
+          should_fail: true
+        - name: unpinned chart version
+          chart_version: 1.20.0
+          should_fail: true
+        - name: untyped upgrade authorization
+          allow_upgrade: "true"
+          should_fail: true
+      loop_control:
+        loop_var: cilium_test_input_case
+        label: "{{ cilium_test_input_case.name }}"
+
+    - name: Create an isolated rendered-values directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: single-node-kubernetes-cilium-values-
+      register: cilium_test_values_directory
+
+    - name: Exercise exact Cilium values rendering
+      block:
+        - name: Define the pinned Cilium values fixture
+          ansible.builtin.include_role:
+            name: cilium
+            tasks_from: define_values.yml
+          vars:
+            cilium_cluster_name: production-a
+            cilium_cluster_id: 42
+            cilium_cluster_pool_ipv4_cidr: 10.200.0.0/16
+            cilium_cluster_pool_ipv4_mask_size: 24
+            cilium_routing_mode: tunnel
+            cilium_tunnel_protocol: vxlan
+
+        - name: Render the pinned Cilium values fixture
+          ansible.builtin.template:
+            src: ../roles/cilium/templates/values.json.j2
+            dest: "{{ cilium_test_values_directory.path }}/values.json"
+            mode: "0600"
+
+        - name: Read the rendered Cilium values fixture
+          ansible.builtin.slurp:
+            src: "{{ cilium_test_values_directory.path }}/values.json"
+          register: cilium_test_values_output
+
+        - name: Normalize the rendered Cilium values fixture
+          ansible.builtin.set_fact:
+            cilium_test_values: >-
+              {{ cilium_test_values_output.content | b64decode | from_json }}
+
+        - name: Validate the exact initial Cilium architecture
+          ansible.builtin.assert:
+            that:
+              - >-
+                cilium_test_values.keys() | sort
+                == cilium_test_expected_top_level_keys | sort
+              - cilium_test_values['cluster']['name'] == 'production-a'
+              - cilium_test_values['cluster']['id'] == 42
+              - cilium_test_values['ipv4']['enabled'] is sameas true
+              - cilium_test_values['ipv6']['enabled'] is sameas false
+              - cilium_test_values['ipam']['mode'] == 'cluster-pool'
+              - >-
+                cilium_test_values['ipam']['operator']
+                ['clusterPoolIPv4PodCIDRList'] == ['10.200.0.0/16']
+              - >-
+                cilium_test_values['ipam']['operator']
+                ['clusterPoolIPv4MaskSize'] == 24
+              - cilium_test_values['routingMode'] == 'tunnel'
+              - cilium_test_values['tunnelProtocol'] == 'vxlan'
+              - cilium_test_values['kubeProxyReplacement'] == 'false'
+              - cilium_test_values['waitForKubeProxy'] is sameas true
+              - cilium_test_values['cleanBpfState'] is sameas false
+              - cilium_test_values['cleanState'] is sameas false
+              - cilium_test_values['bpf']['autoMount']['enabled'] is sameas true
+              - cilium_test_values['bpf']['masquerade'] is sameas false
+              - cilium_test_values['enableIPv4Masquerade'] is sameas true
+              - cilium_test_values['enableIPv6Masquerade'] is sameas false
+              - >-
+                cilium_test_values['k8sNetworkPolicy']['enabled'] is sameas true
+              - >-
+                cilium_test_values['k8sClusterNetworkPolicy']['enabled']
+                is sameas false
+              - cilium_test_values['policyEnforcementMode'] == 'default'
+              - cilium_test_values['l7Proxy'] is sameas false
+              - cilium_test_values['operator']['enabled'] is sameas true
+              - cilium_test_values['operator']['replicas'] == 1
+              - cilium_test_values['cni']['install'] is sameas true
+              - cilium_test_values['cni']['exclusive'] is sameas true
+              - cilium_test_values['cni']['uninstall'] is sameas false
+              - cilium_test_values['hubble']['enabled'] is sameas false
+              - cilium_test_values['hubble']['relay']['enabled'] is sameas false
+              - cilium_test_values['gatewayAPI']['enabled'] is sameas false
+              - >-
+                cilium_test_values['ingressController']['enabled'] is sameas false
+              - >-
+                cilium_test_values['bgpControlPlane']['enabled'] is sameas false
+              - cilium_test_values['encryption']['enabled'] is sameas false
+              - >-
+                cilium_test_values['clustermesh']['config']['enabled'] is sameas false
+              - >-
+                cilium_test_values['clustermesh']['useAPIServer'] is sameas false
+              - cilium_test_values['enableIPv4BIGTCP'] is sameas false
+              - cilium_test_values['enableIPv6BIGTCP'] is sameas false
+              - cilium_test_values['envoy']['enabled'] is sameas false
+          vars:
+            cilium_test_expected_top_level_keys:
+              - bgpControlPlane
+              - bpf
+              - cleanBpfState
+              - cleanState
+              - clustermesh
+              - cluster
+              - cni
+              - enableIPv4BIGTCP
+              - enableIPv4Masquerade
+              - enableIPv6BIGTCP
+              - enableIPv6Masquerade
+              - encryption
+              - envoy
+              - gatewayAPI
+              - hubble
+              - ingressController
+              - ipam
+              - ipv4
+              - ipv6
+              - kubeProxyReplacement
+              - k8sClusterNetworkPolicy
+              - k8sNetworkPolicy
+              - l7Proxy
+              - operator
+              - policyEnforcementMode
+              - routingMode
+              - tunnelProtocol
+              - waitForKubeProxy
+
+        - name: Exercise Cilium lifecycle state cases
+          ansible.builtin.include_tasks: tasks/cilium-state-case.yml
+          loop:
+            - name: empty boundary installs
+              release_records: []
+              expected_action: install
+              should_fail: false
+            - name: unmanaged CNI is rejected
+              release_records: []
+              cni_paths:
+                - /etc/cni/net.d/10-unexpected.conflist
+              expected_action: refuse
+              should_fail: true
+            - name: exact configured release only validates
+              release_records:
+                - present
+              existing_chart_version: 1.20.1
+              expected_action: validate
+              should_fail: false
+            - name: authorized older patch upgrades
+              release_records:
+                - present
+              existing_chart_version: 1.20.0
+              allow_upgrade: true
+              expected_action: upgrade
+              should_fail: false
+            - name: implicit older patch upgrade is rejected
+              release_records:
+                - present
+              existing_chart_version: 1.20.0
+              expected_action: refuse
+              should_fail: true
+            - name: cross-minor upgrade is rejected
+              release_records:
+                - present
+              existing_chart_version: 1.19.18
+              allow_upgrade: true
+              expected_action: refuse
+              should_fail: true
+            - name: canonical values drift is rejected
+              release_records:
+                - present
+              existing_chart_version: 1.20.1
+              drift_values: true
+              expected_action: refuse
+              should_fail: true
+          loop_control:
+            loop_var: cilium_test_state_case
+            label: "{{ cilium_test_state_case.name }}"
+      always:
+        - name: Remove the isolated rendered-values directory
+          ansible.builtin.file:
+            path: "{{ cilium_test_values_directory.path }}"
+            state: absent

@@ -1,0 +1,72 @@
+---
+- name: Initialize the Cilium state-classification result
+  ansible.builtin.set_fact:
+    cilium_test_state_failed: false
+
+- name: Classify the Cilium lifecycle state case
+  block:
+    - name: Invoke Cilium state classification
+      ansible.builtin.include_role:
+        name: cilium
+        tasks_from: classify.yml
+      vars:
+        cilium_release_records: "{{ cilium_test_state_case.release_records }}"
+        cilium_observed_cni_paths: >-
+          {{
+            cilium_test_state_case.cni_paths
+            | default(
+                ['/etc/cni/net.d/05-cilium.conflist']
+                if cilium_test_state_case.release_records | length == 1
+                else []
+              )
+          }}
+        cilium_observed_resource_names: >-
+          {{
+            [
+              'daemonset.apps/cilium',
+              'deployment.apps/cilium-operator',
+              'configmap/cilium-config',
+              'customresourcedefinition.apiextensions.k8s.io/ciliumnodes.cilium.io'
+            ]
+            if cilium_test_state_case.release_records | length == 1
+            else []
+          }}
+        cilium_observed_representative_resource_names: >-
+          {{
+            [
+              'daemonset.apps/cilium',
+              'deployment.apps/cilium-operator',
+              'configmap/cilium-config',
+              'customresourcedefinition.apiextensions.k8s.io/ciliumnodes.cilium.io'
+            ]
+            if cilium_test_state_case.release_records | length == 1
+            else []
+          }}
+        cilium_existing_release:
+          status: deployed
+        cilium_existing_chart_version: >-
+          {{ cilium_test_state_case.existing_chart_version | default('') }}
+        cilium_existing_values: >-
+          {{
+            {'unexpected': true}
+            if cilium_test_state_case.drift_values | default(false)
+            else cilium_desired_values
+          }}
+        cilium_allow_upgrade: >-
+          {{ cilium_test_state_case.allow_upgrade | default(false) }}
+        cilium_chart_version: 1.20.1
+  rescue:
+    - name: Record rejected Cilium lifecycle state
+      ansible.builtin.set_fact:
+        cilium_test_state_failed: true
+
+- name: Require the expected Cilium state-classification result
+  ansible.builtin.assert:
+    that:
+      - cilium_test_state_failed == cilium_test_state_case.should_fail
+      - >-
+        cilium_test_state_failed
+        or cilium_release_action == cilium_test_state_case.expected_action
+    fail_msg: >-
+      Case {{ cilium_test_state_case.name }} produced an unexpected state or
+      lifecycle action {{ cilium_release_action }}.

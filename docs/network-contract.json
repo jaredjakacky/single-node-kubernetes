@@ -1,6 +1,6 @@
 {
-  "contract_version": 1,
-  "scope": "architecture-only",
+  "contract_version": 2,
+  "scope": "architecture-and-cilium-lifecycle",
   "address_plan": {
     "ip_family": "ipv4",
     "kubernetes_service_cidr": "10.96.0.0/12",
@@ -39,7 +39,7 @@
       "big_tcp": false
     }
   },
-  "future_ansible_role_inputs": {
+  "ansible_role_inputs": {
     "cilium_cluster_name": {
       "type": "string",
       "required": true,
@@ -78,7 +78,7 @@
     "cilium_chart_version": {
       "type": "exact_version",
       "required": true,
-      "default": null
+      "default": "1.20.1"
     },
     "cilium_routing_mode": {
       "type": "string",

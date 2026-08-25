@@ -1,0 +1,253 @@
+---
+- name: Read Helm releases named Cilium
+  ansible.builtin.command:
+    argv:
+      - "{{ cilium_helm_binary }}"
+      - list
+      - --all
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - --filter
+      - ^cilium$
+      - --output
+      - json
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+  environment: "{{ cilium_helm_environment }}"
+  register: cilium_helm_list_output
+  changed_when: false
+
+- name: Find existing CNI configuration entries
+  ansible.builtin.find:
+    paths: /etc/cni/net.d
+    file_type: any
+    hidden: true
+    recurse: false
+  register: cilium_cni_entries
+
+- name: Inspect the Cilium DaemonSet
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - get
+      - daemonset
+      - cilium
+      - --ignore-not-found
+      - --output=name
+  register: cilium_existing_daemonset
+  changed_when: false
+
+- name: Inspect the Cilium operator Deployment
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - get
+      - deployment
+      - cilium-operator
+      - --ignore-not-found
+      - --output=name
+  register: cilium_existing_operator
+  changed_when: false
+
+- name: Inspect the Cilium configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - get
+      - configmap
+      - cilium-config
+      - --ignore-not-found
+      - --output=name
+  register: cilium_existing_configmap
+  changed_when: false
+
+- name: Inspect the Cilium CRD boundary
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - get
+      - customresourcedefinition
+      - ciliumnodes.cilium.io
+      - --ignore-not-found
+      - --output=name
+  register: cilium_existing_crd
+  changed_when: false
+
+- name: Inspect Cilium namespaced ownership markers
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - get
+      - serviceaccount/cilium
+      - serviceaccount/cilium-operator
+      - role/cilium-config-agent
+      - rolebinding/cilium-config-agent
+      - --ignore-not-found
+      - --output=name
+  register: cilium_existing_namespaced_markers
+  changed_when: false
+
+- name: Inspect Cilium cluster ownership markers
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - get
+      - namespace/cilium-secrets
+      - clusterrole/cilium
+      - clusterrole/cilium-operator
+      - clusterrolebinding/cilium
+      - clusterrolebinding/cilium-operator
+      - --ignore-not-found
+      - --output=name
+  register: cilium_existing_cluster_markers
+  changed_when: false
+
+- name: Inspect every Cilium API extension
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - get
+      - customresourcedefinitions
+      - --output=json
+  register: cilium_existing_api_extensions
+  changed_when: false
+
+- name: Normalize observed Cilium state
+  ansible.builtin.set_fact:
+    cilium_release_records: "{{ cilium_helm_list_output.stdout | from_json }}"
+    cilium_observed_cni_paths: >-
+      {{ cilium_cni_entries.files | map(attribute='path') | sort | list }}
+    cilium_observed_representative_resource_names: >-
+      {{
+        [
+          cilium_existing_daemonset.stdout,
+          cilium_existing_operator.stdout,
+          cilium_existing_configmap.stdout,
+          cilium_existing_crd.stdout
+        ] | reject('equalto', '') | list
+      }}
+    cilium_observed_resource_names: >-
+      {{
+        (
+          [
+            cilium_existing_daemonset.stdout,
+            cilium_existing_operator.stdout,
+            cilium_existing_configmap.stdout,
+            cilium_existing_crd.stdout
+          ]
+          + cilium_existing_namespaced_markers.stdout_lines
+          + cilium_existing_cluster_markers.stdout_lines
+          + (
+            cilium_existing_api_extensions.stdout
+            | from_json
+          )['items']
+          | selectattr('spec.group', 'equalto', 'cilium.io')
+          | map(attribute='metadata.name')
+          | list
+        ) | reject('equalto', '') | unique | sort | list
+      }}
+
+- name: Require an unambiguous Helm release record
+  ansible.builtin.assert:
+    that:
+      - cilium_release_records | type_debug == 'list'
+      - cilium_release_records | length <= 1
+    fail_msg: >-
+      Helm returned an invalid or ambiguous release set for Cilium:
+      {{ cilium_release_records | to_nice_json }}
+
+- name: Require one managed Cilium CNI file
+  ansible.builtin.assert:
+    that:
+      - cilium_cni_entries.files | length == 1
+      - cilium_observed_cni_paths == [cilium_expected_cni_config_path]
+    fail_msg: >-
+      A managed Cilium release must own only
+      {{ cilium_expected_cni_config_path }} in /etc/cni/net.d.
+  when: cilium_release_records | length == 1
+
+- name: Validate managed Cilium CNI file metadata
+  ansible.builtin.assert:
+    that:
+      - cilium_cni_entries.files[0].isreg
+      - not cilium_cni_entries.files[0].islnk
+      - cilium_cni_entries.files[0].pw_name == 'root'
+      - cilium_cni_entries.files[0].gr_name == 'root'
+      - cilium_cni_entries.files[0].mode in ['0600', '0640', '0644']
+    fail_msg: >-
+      The managed Cilium CNI file must be a root-owned, non-writable-by-group-
+      or-other regular file, never a symlink.
+  when: cilium_release_records | length == 1
+
+- name: Read the managed Cilium CNI configuration
+  ansible.builtin.slurp:
+    src: "{{ cilium_expected_cni_config_path }}"
+  register: cilium_existing_cni_config_output
+  when: cilium_release_records | length == 1
+
+- name: Normalize the managed Cilium CNI configuration
+  ansible.builtin.set_fact:
+    cilium_existing_cni_config: >-
+      {{ cilium_existing_cni_config_output.content | b64decode | from_json }}
+  when: cilium_release_records | length == 1
+
+- name: Validate the managed Cilium CNI configuration
+  ansible.builtin.assert:
+    that:
+      - cilium_existing_cni_config['cniVersion'] == '1.0.0'
+      - cilium_existing_cni_config['name'] == 'cilium'
+      - cilium_existing_cni_config['plugins'] | type_debug == 'list'
+      - cilium_existing_cni_config['plugins'] | length == 1
+      - cilium_existing_cni_config['plugins'][0]['type'] == 'cilium-cni'
+    fail_msg: >-
+      {{ cilium_expected_cni_config_path }} is not the exact standalone Cilium
+      1.20 CNI shape. Refusing to accept a chained or substituted plugin.
+  when: cilium_release_records | length == 1
+
+- name: Read existing Cilium user-supplied values
+  ansible.builtin.command:
+    argv:
+      - "{{ cilium_helm_binary }}"
+      - get
+      - values
+      - "{{ cilium_release_name }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - --output
+      - json
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+  environment: "{{ cilium_helm_environment }}"
+  register: cilium_helm_values_output
+  changed_when: false
+  when: cilium_release_records | length == 1
+
+- name: Normalize existing Cilium release details
+  ansible.builtin.set_fact:
+    cilium_existing_release: "{{ cilium_release_records[0] }}"
+    cilium_existing_chart_version: >-
+      {{ cilium_release_records[0]['chart'] | regex_replace('^cilium-', '') }}
+    cilium_existing_values: "{{ cilium_helm_values_output.stdout | from_json }}"
+  when: cilium_release_records | length == 1

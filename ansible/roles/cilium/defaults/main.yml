@@ -1,0 +1,21 @@
+---
+# Permanent identity must be supplied by private production inventory.
+cilium_cluster_name: null
+cilium_cluster_id: null
+
+# The public architecture reserves this pool and allocation size for the first
+# cluster. Production inventory should still state both values explicitly.
+cilium_cluster_pool_ipv4_cidr: 10.200.0.0/16
+cilium_cluster_pool_ipv4_mask_size: 24
+
+cilium_chart_version: "{{ cilium_supported_chart_version }}"
+cilium_routing_mode: tunnel
+cilium_tunnel_protocol: vxlan
+
+# A version change never authorizes a cluster mutation by itself.
+cilium_allow_upgrade: false
+
+cilium_lifecycle_lock_directory: /run/lock/single-node-kubernetes-cilium
+cilium_helm_timeout: 10m
+cilium_validation_namespace: cilium-validation
+cilium_validation_timeout: 5m

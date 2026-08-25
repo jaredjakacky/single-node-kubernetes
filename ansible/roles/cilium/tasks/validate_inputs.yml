@@ -1,0 +1,73 @@
+---
+- name: Require permanent Cilium identity inputs
+  ansible.builtin.assert:
+    that:
+      - cilium_cluster_name is string
+      - cilium_cluster_name | length > 0
+      - cilium_cluster_id is not none
+    fail_msg: >-
+      Private production inventory must provide a permanent
+      cilium_cluster_name and numeric cilium_cluster_id.
+
+- name: Validate the permanent Cilium cluster name
+  ansible.builtin.assert:
+    that:
+      - cilium_cluster_name | length <= 32
+      - cilium_cluster_name is match('^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$')
+      - "'single-node' not in cilium_cluster_name"
+    fail_msg: >-
+      cilium_cluster_name must be a topology-neutral, lower-case DNS label of
+      at most 32 characters and must not contain "single-node".
+
+- name: Validate typed Cilium lifecycle inputs
+  ansible.builtin.assert:
+    that:
+      - cilium_cluster_id | type_debug == 'int'
+      - cilium_cluster_id >= 1
+      - cilium_cluster_id <= 255
+      - cilium_cluster_pool_ipv4_cidr is string
+      - cilium_cluster_pool_ipv4_mask_size | type_debug == 'int'
+      - cilium_cluster_pool_ipv4_mask_size == 24
+      - cilium_allow_upgrade | type_debug == 'bool'
+      - cilium_chart_version == cilium_supported_chart_version
+      - cilium_routing_mode == 'tunnel'
+      - cilium_tunnel_protocol == 'vxlan'
+    fail_msg: >-
+      Cilium inputs must preserve the pinned chart, cluster ID 1..255, /24
+      node allocation, VXLAN tunnel mode, and typed upgrade authorization.
+
+- name: Validate the Cilium IPv4 address plan
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - |
+        import ipaddress
+        import sys
+
+        pod_pool = ipaddress.ip_network(sys.argv[1], strict=True)
+        service_pool = ipaddress.ip_network(sys.argv[2], strict=True)
+        node_prefix = int(sys.argv[3])
+        if pod_pool.version != 4 or service_pool.version != 4:
+            raise SystemExit("the Pod and Service pools must both be IPv4")
+        if pod_pool.overlaps(service_pool):
+            raise SystemExit(
+                f"Pod pool {pod_pool} overlaps Service pool {service_pool}"
+            )
+        if not pod_pool.prefixlen < node_prefix <= 30:
+            raise SystemExit(
+                f"node prefix /{node_prefix} does not fit inside {pod_pool}"
+            )
+      - "{{ cilium_cluster_pool_ipv4_cidr }}"
+      - "{{ cilium_kubernetes_service_cidr }}"
+      - "{{ cilium_cluster_pool_ipv4_mask_size | string }}"
+  changed_when: false
+
+- name: Require the supported execution platform
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.system == 'Linux'
+      - ansible_facts.architecture == 'x86_64'
+    fail_msg: >-
+      This lifecycle currently pins and validates only official Linux amd64
+      Helm artifacts.

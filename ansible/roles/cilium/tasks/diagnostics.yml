@@ -1,0 +1,82 @@
+---
+- name: Collect Kubernetes lifecycle diagnostics
+  ansible.builtin.command:
+    argv: "{{ item }}"
+  environment: "{{ cilium_helm_environment }}"
+  loop:
+    - - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - get
+      - nodes
+      - --output=wide
+    - - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - get
+      - pods
+      - --all-namespaces
+      - --output=wide
+    - - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - kube-system
+      - get
+      - daemonset/cilium
+      - deployment/cilium-operator
+      - deployment/coredns
+      - --output=wide
+    - - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - get
+      - events
+      - --all-namespaces
+      - --sort-by=.lastTimestamp
+    - - "{{ cilium_helm_binary }}"
+      - status
+      - "{{ cilium_release_name }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+    - - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - exec
+      - >-
+        {{
+          (cilium_agent_pod_name | default({'stdout': ''})).stdout
+          | default('cilium-diagnostics-unavailable', true)
+        }}
+      - --
+      - cilium-dbg
+      - status
+      - --verbose
+    - - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_validation_namespace }}"
+      - get
+      - all,networkpolicy
+      - --output=wide
+  register: cilium_diagnostic_commands
+  changed_when: false
+  failed_when: false
+
+- name: Emit Cilium lifecycle diagnostics
+  ansible.builtin.debug:
+    msg: |-
+      Command: {{ item.cmd | join(' ') }}
+      rc: {{ item.rc }}
+      stdout:
+      {{ item.stdout | default('', true) }}
+      stderr:
+      {{ item.stderr | default('', true) }}
+  loop: "{{ cilium_diagnostic_commands.results }}"
+  loop_control:
+    label: "{{ item.cmd[0] }}"

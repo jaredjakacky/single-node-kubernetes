@@ -1,0 +1,512 @@
+---
+- name: Read the deployed Cilium Helm release
+  ansible.builtin.command:
+    argv:
+      - "{{ cilium_helm_binary }}"
+      - list
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - --filter
+      - ^cilium$
+      - --output
+      - json
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+  environment: "{{ cilium_helm_environment }}"
+  register: cilium_validated_helm_list_output
+  changed_when: false
+
+- name: Read the deployed Cilium user-supplied values
+  ansible.builtin.command:
+    argv:
+      - "{{ cilium_helm_binary }}"
+      - get
+      - values
+      - "{{ cilium_release_name }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - --output
+      - json
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+  environment: "{{ cilium_helm_environment }}"
+  register: cilium_validated_helm_values_output
+  changed_when: false
+
+- name: Validate the exact deployed Helm state
+  ansible.builtin.assert:
+    that:
+      - (cilium_validated_helm_list_output.stdout | from_json) | length == 1
+      - >-
+        (cilium_validated_helm_list_output.stdout | from_json)[0]['status']
+        == 'deployed'
+      - >-
+        (cilium_validated_helm_list_output.stdout | from_json)[0]['chart']
+        == 'cilium-' ~ cilium_chart_version
+      - >-
+        (cilium_validated_helm_values_output.stdout | from_json)
+        == cilium_desired_values
+    fail_msg: >-
+      Helm did not report the exact pinned Cilium chart and canonical
+      user-supplied values after the selected lifecycle action.
+
+- name: Wait for the Cilium agent rollout
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - rollout
+      - status
+      - daemonset/cilium
+      - "--timeout={{ cilium_helm_timeout }}"
+  changed_when: false
+
+- name: Wait for the Cilium operator rollout
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - rollout
+      - status
+      - deployment/cilium-operator
+      - "--timeout={{ cilium_helm_timeout }}"
+  changed_when: false
+
+- name: Read Cilium agent and operator status
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - get
+      - "{{ item }}"
+      - --output=json
+  loop:
+    - daemonset/cilium
+    - deployment/cilium-operator
+  register: cilium_workload_status_output
+  changed_when: false
+
+- name: Normalize Cilium agent and operator status
+  ansible.builtin.set_fact:
+    cilium_agent_status: >-
+      {{ cilium_workload_status_output.results[0].stdout | from_json }}
+    cilium_operator_status: >-
+      {{ cilium_workload_status_output.results[1].stdout | from_json }}
+
+- name: Validate Cilium agent and operator readiness
+  ansible.builtin.assert:
+    that:
+      - cilium_agent_status['status']['desiredNumberScheduled'] == 1
+      - cilium_agent_status['status']['numberReady'] == 1
+      - cilium_agent_status['status']['numberAvailable'] == 1
+      - cilium_operator_status['spec']['replicas'] == 1
+      - cilium_operator_status['status']['readyReplicas'] == 1
+      - cilium_operator_status['status']['availableReplicas'] == 1
+    fail_msg: >-
+      The single Cilium agent or the one-replica Cilium operator is not Ready
+      and Available.
+
+- name: Select the Cilium agent Pod
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - get
+      - pods
+      - --selector=k8s-app=cilium
+      - --output=jsonpath={.items[0].metadata.name}
+  register: cilium_agent_pod_name
+  changed_when: false
+
+- name: Require one selected Cilium agent Pod
+  ansible.builtin.assert:
+    that:
+      - cilium_agent_pod_name.stdout is match('^cilium-[a-z0-9-]+$')
+    fail_msg: No Cilium agent Pod could be selected for runtime status checks.
+
+- name: Read detailed Cilium runtime status
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - exec
+      - "{{ cilium_agent_pod_name.stdout }}"
+      - --
+      - cilium-dbg
+      - status
+      - --verbose
+  register: cilium_runtime_status
+  changed_when: false
+
+- name: Validate Kubernetes, datapath, IPAM, and policy status
+  ansible.builtin.assert:
+    that:
+      - cilium_runtime_status.stdout is search('(?m)^Kubernetes:\s+Ok\b')
+      - cilium_runtime_status.stdout is search('(?m)^Cilium:\s+Ok\b')
+      - cilium_runtime_status.stdout is search('(?m)^IPAM:\s+IPv4:')
+      - >-
+        cilium_runtime_status.stdout
+        is search('(?m)^KubeProxyReplacement:\s+False\b')
+      - >-
+        cilium_runtime_status.stdout
+        is search('(?m)^Routing:\s+Network: Tunnel \[vxlan\]')
+      - >-
+        cilium_runtime_status.stdout
+        is search('(?m)^Masquerading:\s+IPTables \[IPv4: Enabled')
+      - >-
+        cilium_runtime_status.stdout
+        is search('(?m)^Controller Status:\s+[0-9]+/[0-9]+ healthy')
+      - cilium_runtime_status.stdout is search('(?m)^Hubble:\s+Disabled\b')
+      - >-
+        cilium_runtime_status.stdout
+        is search('(?m)^Cluster health:\s+1/1 reachable\b')
+    fail_msg: |-
+      cilium-dbg did not prove the expected healthy Kubernetes, datapath, IPAM,
+      policy-controller, cluster-health, retained-kube-proxy, iptables
+      masquerading, VXLAN, and disabled-Hubble state.
+
+      {{ cilium_runtime_status.stdout }}
+
+- name: Wait for Kubernetes Node readiness
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - wait
+      - --for=condition=Ready
+      - node
+      - --all
+      - "--timeout={{ cilium_helm_timeout }}"
+  changed_when: false
+
+- name: Read Kubernetes Nodes
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - get
+      - nodes
+      - --output=json
+  register: cilium_node_ready_output
+  changed_when: false
+
+- name: Normalize Kubernetes Nodes
+  ansible.builtin.set_fact:
+    cilium_nodes: "{{ (cilium_node_ready_output.stdout | from_json)['items'] }}"
+
+- name: Require exactly one Kubernetes Node
+  ansible.builtin.assert:
+    that:
+      - cilium_nodes | length == 1
+    fail_msg: >-
+      This lifecycle requires exactly one Kubernetes Node, found
+      {{ cilium_nodes | length }}.
+
+- name: Normalize the Node Ready condition
+  ansible.builtin.set_fact:
+    cilium_node_ready_conditions: >-
+      {{
+        (
+          (cilium_node_ready_output.stdout | from_json)['items'][0]
+        )['status']['conditions']
+        | selectattr('type', 'equalto', 'Ready')
+        | list
+      }}
+
+- name: Require the single Node to be Ready
+  ansible.builtin.assert:
+    that:
+      - cilium_node_ready_conditions | length == 1
+      - cilium_node_ready_conditions[0]['status'] == 'True'
+    fail_msg: >-
+      Cilium deployment did not produce exactly one Node with Ready=True:
+      {{ cilium_nodes | to_nice_json }}
+
+- name: Wait for the CoreDNS Deployment rollout
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - rollout
+      - status
+      - deployment/coredns
+      - "--timeout={{ cilium_helm_timeout }}"
+  changed_when: false
+
+- name: Require every CoreDNS Pod to be Ready
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - wait
+      - --for=condition=Ready
+      - pod
+      - --selector=k8s-app=kube-dns
+      - "--timeout={{ cilium_helm_timeout }}"
+  changed_when: false
+
+- name: Check for a pre-existing validation namespace
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - get
+      - namespace
+      - "{{ cilium_validation_namespace }}"
+      - --ignore-not-found
+      - --output=name
+  register: cilium_validation_namespace_state
+  changed_when: false
+
+- name: Refuse to overwrite an existing validation namespace
+  ansible.builtin.assert:
+    that:
+      - cilium_validation_namespace_state.stdout == ''
+    fail_msg: >-
+      Namespace {{ cilium_validation_namespace }} already exists. Refusing to
+      adopt or delete workloads that this lifecycle did not create. Diagnose
+      the stale or independently managed namespace before rerunning.
+
+- name: Create the temporary validation namespace
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - create
+      - namespace
+      - "{{ cilium_validation_namespace }}"
+  changed_when: false
+
+- name: Record validation namespace ownership
+  ansible.builtin.set_fact:
+    cilium_validation_namespace_created: true
+
+- name: Apply purpose-built validation workloads
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_validation_namespace }}"
+      - apply
+      - --filename
+      - -
+    stdin: "{{ lookup('ansible.builtin.template', 'validation-resources.yml.j2') }}"
+  changed_when: false
+
+- name: Wait for every validation Pod to be Ready
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_validation_namespace }}"
+      - wait
+      - --for=condition=Ready
+      - pod
+      - --all
+      - "--timeout={{ cilium_validation_timeout }}"
+  changed_when: false
+
+- name: Read the validation server Pod
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_validation_namespace }}"
+      - get
+      - pod
+      - cilium-validation-server
+      - --output=json
+  register: cilium_validation_server_output
+  changed_when: false
+
+- name: Read the validation ClusterIP Service
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_validation_namespace }}"
+      - get
+      - service
+      - cilium-validation-server
+      - --output=json
+  register: cilium_validation_service_output
+  changed_when: false
+
+- name: Normalize validation network addresses
+  ansible.builtin.set_fact:
+    cilium_validation_server_ip: >-
+      {{ (cilium_validation_server_output.stdout | from_json)['status']['podIP'] }}
+    cilium_validation_service_ip: >-
+      {{ (cilium_validation_service_output.stdout | from_json)['spec']['clusterIP'] }}
+
+- name: Validate temporary Pod and Service IPv4 addresses
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - |
+        import ipaddress
+        import sys
+
+        pod_pool = ipaddress.ip_network(sys.argv[1], strict=True)
+        service_pool = ipaddress.ip_network(sys.argv[2], strict=True)
+        pod_ip = ipaddress.ip_address(sys.argv[3])
+        service_ip = ipaddress.ip_address(sys.argv[4])
+        if pod_ip.version != 4 or pod_ip not in pod_pool:
+            raise SystemExit(f"Pod IP {pod_ip} is outside {pod_pool}")
+        if service_ip.version != 4 or service_ip not in service_pool:
+            raise SystemExit(f"Service IP {service_ip} is outside {service_pool}")
+      - "{{ cilium_cluster_pool_ipv4_cidr }}"
+      - "{{ cilium_kubernetes_service_cidr }}"
+      - "{{ cilium_validation_server_ip }}"
+      - "{{ cilium_validation_service_ip }}"
+  changed_when: false
+
+- name: Prove allowed Pod-to-Pod connectivity
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_validation_namespace }}"
+      - exec
+      - cilium-validation-client-allowed
+      - --
+      - /agnhost
+      - connect
+      - --timeout=5s
+      - --protocol=tcp
+      - "{{ cilium_validation_server_ip }}:8080"
+  register: cilium_validation_pod_connectivity
+  changed_when: false
+  retries: 10
+  delay: 1
+  until: cilium_validation_pod_connectivity.rc == 0
+
+- name: Prove allowed Pod-to-ClusterIP connectivity
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_validation_namespace }}"
+      - exec
+      - cilium-validation-client-allowed
+      - --
+      - /agnhost
+      - connect
+      - --timeout=5s
+      - --protocol=tcp
+      - "{{ cilium_validation_service_ip }}:8080"
+  changed_when: false
+
+- name: Prove cluster DNS resolution and Service connectivity
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_validation_namespace }}"
+      - exec
+      - cilium-validation-client-allowed
+      - --
+      - /agnhost
+      - connect
+      - --timeout=5s
+      - --protocol=tcp
+      - >-
+        cilium-validation-server.{{ cilium_validation_namespace }}.svc.cluster.local:8080
+  changed_when: false
+
+- name: Prove bounded Pod Internet egress
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_validation_namespace }}"
+      - exec
+      - cilium-validation-client-allowed
+      - --
+      - /agnhost
+      - connect
+      - --timeout=5s
+      - --protocol=tcp
+      - "{{ cilium_validation_egress_endpoint }}"
+  changed_when: false
+
+- name: Probe the NetworkPolicy-denied path
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_validation_namespace }}"
+      - exec
+      - cilium-validation-client-denied
+      - --
+      - /agnhost
+      - connect
+      - --timeout=3s
+      - --protocol=tcp
+      - "{{ cilium_validation_server_ip }}:8080"
+  register: cilium_validation_denied_connectivity
+  changed_when: false
+  failed_when: false
+  retries: 10
+  delay: 1
+  until:
+    - cilium_validation_denied_connectivity.rc != 0
+    - >-
+      cilium_validation_denied_connectivity.stderr
+      is search('(?m)^TIMEOUT$')
+
+- name: Require NetworkPolicy to deny the disallowed Pod
+  ansible.builtin.assert:
+    that:
+      - cilium_validation_denied_connectivity.rc != 0
+      - >-
+        cilium_validation_denied_connectivity.stderr
+        is search('(?m)^TIMEOUT$')
+    fail_msg: >-
+      The disallowed client did not produce the expected network timeout. A
+      refusal, DNS error, or kubectl failure does not prove enforcement of the
+      purpose-built ingress NetworkPolicy.

@@ -1,0 +1,103 @@
+---
+- name: Create Helm installation directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: /var/cache/helm
+      mode: "0700"
+    - path: /etc/helm
+      mode: "0700"
+    - path: /var/lib/helm
+      mode: "0700"
+    - path: "/usr/local/lib/helm/{{ cilium_helm_version }}"
+      mode: "0755"
+
+- name: Download the pinned Helm archive
+  ansible.builtin.get_url:
+    url: >-
+      https://get.helm.sh/helm-v{{ cilium_helm_version }}-linux-amd64.tar.gz
+    dest: >-
+      /var/cache/helm/helm-v{{ cilium_helm_version }}-linux-amd64.tar.gz
+    checksum: "sha256:{{ cilium_helm_archive_sha256 }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Inspect the Helm archive contents
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/tar
+      - --list
+      - --gzip
+      - --file
+      - >-
+        /var/cache/helm/helm-v{{ cilium_helm_version }}-linux-amd64.tar.gz
+  register: cilium_helm_archive_contents
+  changed_when: false
+
+- name: Require the expected Helm archive shape
+  ansible.builtin.assert:
+    that:
+      - >-
+        cilium_helm_archive_contents.stdout_lines | sort
+        == cilium_helm_expected_archive_contents | sort
+    fail_msg: >-
+      The official Helm {{ cilium_helm_version }} linux-amd64 archive did not
+      contain exactly the expected files.
+  vars:
+    cilium_helm_expected_archive_contents:
+      - linux-amd64/
+      - linux-amd64/LICENSE
+      - linux-amd64/README.md
+      - linux-amd64/helm
+
+- name: Install the versioned Helm distribution
+  ansible.builtin.unarchive:
+    src: >-
+      /var/cache/helm/helm-v{{ cilium_helm_version }}-linux-amd64.tar.gz
+    dest: "/usr/local/lib/helm/{{ cilium_helm_version }}"
+    remote_src: true
+    owner: root
+    group: root
+    creates: >-
+      /usr/local/lib/helm/{{ cilium_helm_version }}/.installed-{{ cilium_helm_archive_sha256 }}
+
+- name: Record the successful Helm installation
+  ansible.builtin.copy:
+    content: "{{ cilium_helm_archive_sha256 }}\n"
+    dest: >-
+      /usr/local/lib/helm/{{ cilium_helm_version }}/.installed-{{ cilium_helm_archive_sha256 }}
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Link the pinned Helm client
+  ansible.builtin.file:
+    src: >-
+      /usr/local/lib/helm/{{ cilium_helm_version }}/linux-amd64/helm
+    dest: "{{ cilium_helm_binary }}"
+    state: link
+
+- name: Read the installed Helm version
+  ansible.builtin.command:
+    argv:
+      - "{{ cilium_helm_binary }}"
+      - version
+      - --short
+  environment: "{{ cilium_helm_environment }}"
+  register: cilium_helm_version_output
+  changed_when: false
+
+- name: Require the pinned Helm version
+  ansible.builtin.assert:
+    that:
+      - >-
+        cilium_helm_version_output.stdout
+        is match('^v' ~ (cilium_helm_version | regex_escape) ~ '\+')
+    fail_msg: >-
+      {{ cilium_helm_binary }} did not report pinned Helm version
+      {{ cilium_helm_version }}.

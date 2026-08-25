@@ -254,15 +254,15 @@ def validate_initial_cilium_contract(contract: dict[str, Any]) -> None:
     )
 
 
-def validate_future_role_contract(contract: dict[str, Any]) -> None:
-    inputs = contract["future_ansible_role_inputs"]
+def validate_role_contract(contract: dict[str, Any]) -> None:
+    inputs = contract["ansible_role_inputs"]
     require(
         set(inputs) == EXPECTED_ROLE_INPUTS,
-        "the future public-role input contract is incomplete",
+        "the public-role input contract is incomplete",
     )
     require(
         all(specification["required"] is True for specification in inputs.values()),
-        "every future Cilium role input must be explicit",
+        "every Cilium role input must be explicit",
     )
 
     name = inputs["cilium_cluster_name"]
@@ -302,7 +302,10 @@ def validate_future_role_contract(contract: dict[str, Any]) -> None:
         (cluster_id["minimum"], cluster_id["maximum"]) == (1, 255),
         "Cilium cluster ID must be constrained to 1..255",
     )
-    require(chart_version["default"] is None, "this PR must not select a chart version")
+    require(
+        chart_version["default"] == "1.20.1",
+        "the role contract must select the pinned Cilium chart version",
+    )
 
     address_plan = contract["address_plan"]
     require(
@@ -537,13 +540,22 @@ def validate_repository_boundaries(contract: dict[str, Any]) -> None:
     validate_cilium_host_task_documents(load_cilium_host_task_documents())
 
     require(
-        not (REPOSITORY_ROOT / "ansible" / "roles" / "cilium").exists(),
-        "this architecture-only change must not add a Cilium deployment role",
+        (REPOSITORY_ROOT / "ansible" / "roles" / "cilium").is_dir(),
+        "the dedicated Cilium lifecycle role is missing",
     )
     require(
-        not (REPOSITORY_ROOT / "ansible" / "playbooks" / "cilium.yml").exists(),
-        "this architecture-only change must not add a Cilium playbook",
+        (REPOSITORY_ROOT / "ansible" / "playbooks" / "cilium.yml").is_file(),
+        "the dedicated Cilium lifecycle playbook is missing",
     )
+
+    for playbook_name in ("node.yml", "bootstrap.yml"):
+        playbook = (
+            REPOSITORY_ROOT / "ansible" / "playbooks" / playbook_name
+        ).read_text(encoding="utf-8")
+        require(
+            re.search(r"(?m)^\s*- role: cilium\s*$", playbook) is None,
+            f"{playbook_name} must not invoke the Cilium deployment role",
+        )
 
 
 def validate_regression_guards(contract: dict[str, Any]) -> None:
@@ -683,26 +695,29 @@ def validate_regression_guards(contract: dict[str, Any]) -> None:
     )
     for name, input_name, field, value in drift_cases:
         drifted_contract = copy.deepcopy(contract)
-        drifted_contract["future_ansible_role_inputs"][input_name][field] = value
+        drifted_contract["ansible_role_inputs"][input_name][field] = value
         require_validation_failure(
             f"{name} regression",
-            lambda fixture=drifted_contract: validate_future_role_contract(fixture),
+            lambda fixture=drifted_contract: validate_role_contract(fixture),
             "must match" if field == "default" else "must contain only",
         )
 
 
 def main() -> None:
     contract = load_json_object(CONTRACT_PATH)
-    require(contract["contract_version"] == 1, "unsupported network contract version")
-    require(contract["scope"] == "architecture-only", "contract scope must be inert")
+    require(contract["contract_version"] == 2, "unsupported network contract version")
+    require(
+        contract["scope"] == "architecture-and-cilium-lifecycle",
+        "contract scope must cover the implemented Cilium lifecycle",
+    )
     validate_address_plan(contract)
     validate_initial_cilium_contract(contract)
-    validate_future_role_contract(contract)
+    validate_role_contract(contract)
     validate_repository_boundaries(contract)
     validate_regression_guards(contract)
     print(
         "Network architecture contract passed: IPv4 CIDRs disjoint, "
-        "Cilium features deferred, deployment boundary intact"
+        "Cilium deferred-feature and lifecycle boundaries intact"
     )
 
 

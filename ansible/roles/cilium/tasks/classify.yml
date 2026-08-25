@@ -1,0 +1,84 @@
+---
+- name: Initialize the fail-closed Cilium lifecycle action
+  ansible.builtin.set_fact:
+    cilium_release_action: refuse
+
+- name: Accept a genuinely empty CNI boundary for first installation
+  ansible.builtin.set_fact:
+    cilium_release_action: install
+  when:
+    - cilium_release_records | length == 0
+    - cilium_observed_cni_paths | length == 0
+    - cilium_observed_resource_names | length == 0
+
+- name: Refuse unmanaged or inconsistent state without a Helm release
+  ansible.builtin.fail:
+    msg: |-
+      No Cilium Helm release exists, but the cluster networking boundary is not
+      empty. Refusing to remove, adopt, or overwrite existing state.
+
+      CNI entries: {{ cilium_observed_cni_paths | to_nice_json }}
+      Cilium resources: {{ cilium_observed_resource_names | to_nice_json }}
+  when:
+    - cilium_release_records | length == 0
+    - >-
+      cilium_observed_cni_paths | length > 0
+      or cilium_observed_resource_names | length > 0
+
+- name: Validate the shape of a managed Cilium installation
+  ansible.builtin.assert:
+    that:
+      - cilium_existing_release['status'] == 'deployed'
+      - >-
+        cilium_observed_cni_paths == [cilium_expected_cni_config_path]
+      - >-
+        cilium_observed_representative_resource_names | sort
+        == cilium_expected_resource_names | sort
+      - cilium_existing_values == cilium_desired_values
+    fail_msg: |-
+      The existing Cilium installation is inconsistent or configuration has
+      drifted. Refusing an implicit repair or configuration mutation.
+
+      Helm state: {{ cilium_existing_release | to_nice_json }}
+      CNI entries: {{ cilium_observed_cni_paths | to_nice_json }}
+      Cilium resources: {{ cilium_observed_resource_names | to_nice_json }}
+  vars:
+    cilium_expected_resource_names:
+      - daemonset.apps/cilium
+      - deployment.apps/cilium-operator
+      - configmap/cilium-config
+      - customresourcedefinition.apiextensions.k8s.io/ciliumnodes.cilium.io
+  when: cilium_release_records | length == 1
+
+- name: Select validation for the exact configured release
+  ansible.builtin.set_fact:
+    cilium_release_action: validate
+  when:
+    - cilium_release_records | length == 1
+    - cilium_existing_chart_version == cilium_chart_version
+
+- name: Select an explicitly authorized patch upgrade
+  ansible.builtin.set_fact:
+    cilium_release_action: upgrade
+  when:
+    - cilium_release_records | length == 1
+    - cilium_existing_chart_version is match('^1\.20\.[0-9]+$')
+    - cilium_existing_chart_version is version(cilium_chart_version, '<')
+    - cilium_allow_upgrade
+
+- name: Refuse an unauthorized or unsupported Cilium version transition
+  ansible.builtin.fail:
+    msg: >-
+      Existing chart version {{ cilium_existing_chart_version }} cannot be
+      changed automatically to {{ cilium_chart_version }}. Only an older 1.20
+      patch release with cilium_allow_upgrade=true is supported; downgrades,
+      cross-minor upgrades, and implicit upgrades are rejected.
+  when:
+    - cilium_release_records | length == 1
+    - cilium_release_action == 'refuse'
+
+- name: Require one deterministic Cilium lifecycle action
+  ansible.builtin.assert:
+    that:
+      - cilium_release_action in ['install', 'upgrade', 'validate']
+    fail_msg: The existing Cilium state could not be classified safely.

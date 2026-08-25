@@ -1,8 +1,9 @@
 # Kubernetes and Cilium network architecture
 
 This document is the design boundary for the first Cilium lifecycle. It records
-the network decisions that a later implementation must follow, but it does not
-install Cilium, create a Hetzner private network, or change the live cluster.
+the network decisions that the dedicated Ansible lifecycle implements, but the
+document itself does not install Cilium, create a Hetzner private network, or
+change the live cluster.
 The companion [`network-contract.json`](network-contract.json) is normative,
 machine-readable design data. It is not a Helm values file or an input to any
 production workflow.
@@ -15,8 +16,9 @@ Service CIDR `10.96.0.0/12`. Those values are live cluster state. This design
 does not rename the kubeadm cluster, change its Service CIDR, set a kubeadm Pod
 subnet, expose the Kubernetes API, or alter Terraform.
 
-Cilium will own Pod address allocation, so kubeadm deliberately continues to
-omit `networking.podSubnet`. The first Cilium installation will retain
+Cilium owns Pod address allocation after its dedicated lifecycle runs, so
+kubeadm deliberately continues to omit `networking.podSubnet`. The first Cilium
+installation retains
 kube-proxy. The repository's existing `cilium_host` role remains limited to
 validating host and kernel prerequisites; it is not a deployment role.
 
@@ -120,7 +122,7 @@ rollback plan, and focused validation.
 ## Permanent Cilium identity
 
 Cilium's cluster identity is separate from kubeadm's already-live
-`clusterName`. The future installation must set both a human-readable Cilium
+`clusterName`. The installation must set both a human-readable Cilium
 cluster name and a numeric cluster ID at the first deployment. They must remain
 stable as this cluster grows and must be unique if ClusterMesh is introduced.
 
@@ -132,11 +134,10 @@ be an explicit value from 1 through 255. The private live repository will
 provide both identity values from production inventory; this public repository
 does not choose arbitrary production identity.
 
-## Future Ansible role contract
+## Ansible role contract
 
-A future public Cilium deployment role must expose the following inputs and
-validate them before running Helm. The names follow current repository
-conventions but can be adjusted deliberately when the role exists.
+The public Cilium deployment role exposes the following inputs and validates
+them before running Helm.
 
 | Input | Contract |
 | --- | --- |
@@ -144,27 +145,26 @@ conventions but can be adjusted deliberately when the role exists.
 | `cilium_cluster_id` | Required production-inventory integer from 1 through 255; stable and ClusterMesh-unique. No reusable default. |
 | `cilium_cluster_pool_ipv4_cidr` | IPv4 network, initially `10.200.0.0/16`; must not overlap Services, node networks, VPNs, administration networks, or another cluster Pod pool. |
 | `cilium_cluster_pool_ipv4_mask_size` | Integer, initially `24`; must be a longer prefix than the cluster pool and chosen before node allocations exist. |
-| `cilium_chart_version` | Required exact chart version. The implementation PR must select a Kubernetes-compatible version, pin it rather than use `latest`, and make the pin Renovate-manageable. |
+| `cilium_chart_version` | Exact Kubernetes-compatible chart version, pinned to `1.20.1` and Renovate-manageable. Any different value is rejected until its artifact digest and lifecycle behavior are deliberately updated. |
 | `cilium_routing_mode` | Initially constrained to `tunnel`. A change to native routing is an architecture migration. |
 | `cilium_tunnel_protocol` | Initially constrained to `vxlan`. The pinned chart's values schema must be the authority for the final Helm mapping. |
 
 Reusable role code must not contain a production cluster name or ID. The role
 may encode safe architecture defaults such as the current pool and `/24` mask,
-but the live inventory remains the authority for permanent identity. The later
-implementation must render explicit values for every initial decision rather
-than rely on chart defaults that can change between releases.
+but the live inventory remains the authority for permanent identity. The role
+renders explicit values for every initial decision rather than relying on chart
+defaults that can change between releases.
 
 ## Migration sequence
 
-1. Select and pin a Cilium chart version compatible with the pinned Kubernetes
-   release, then implement the reusable role and private identity injection.
-2. Install the minimal IPv4/VXLAN lifecycle while kube-proxy remains active;
-   validate Pod, Service, DNS, egress, restart, and rollback behavior.
-3. Add a second node and its underlay connectivity, including MTU and UDP 8472
+1. Install the pinned minimal IPv4/VXLAN lifecycle while kube-proxy remains
+   active; validate Pod, Service, DNS, egress, policy, rerun, and rollback
+   behavior.
+2. Add a second node and its underlay connectivity, including MTU and UDP 8472
    validation, then prove ordinary cross-node traffic.
-4. Introduce Hubble for cross-node flow visibility.
-5. Evaluate WireGuard as the next multi-node hardening step.
-6. Treat operator redundancy, kube-proxy replacement, BPF masquerading, native
+3. Introduce Hubble for cross-node flow visibility.
+4. Evaluate WireGuard as the next multi-node hardening step.
+5. Treat operator redundancy, kube-proxy replacement, BPF masquerading, native
    routing or BGP, gateways, ClusterMesh, and performance features as separate
    migrations with measured need and rollback coverage.
 
