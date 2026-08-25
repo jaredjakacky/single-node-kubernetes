@@ -11,6 +11,7 @@ import ipaddress
 import json
 import pathlib
 import re
+from collections import Counter
 from collections.abc import Callable
 from typing import Any
 
@@ -42,7 +43,9 @@ KUBEADM_VALIDATION_PATH = (
     / "tasks"
     / "validate.yml"
 )
-CILIUM_HOST_TASKS_PATH = REPOSITORY_ROOT / "ansible" / "roles" / "cilium_host" / "tasks"
+CILIUM_HOST_ROLE_PATH = REPOSITORY_ROOT / "ansible" / "roles" / "cilium_host"
+CILIUM_HOST_TASKS_PATH = CILIUM_HOST_ROLE_PATH / "tasks"
+CILIUM_HOST_HANDLERS_PATH = CILIUM_HOST_ROLE_PATH / "handlers"
 
 EXPECTED_DEFERRED_FEATURES = {
     "hubble",
@@ -72,6 +75,20 @@ ALLOWED_CILIUM_HOST_MODULES = {
     "ansible.builtin.slurp",
     "ansible.builtin.stat",
 }
+ALLOWED_CILIUM_HOST_TASK_KEYWORDS = {
+    "always",
+    "block",
+    "changed_when",
+    "failed_when",
+    "loop",
+    "loop_control",
+    "name",
+    "register",
+    "rescue",
+    "when",
+}
+CILIUM_HOST_TASK_BLOCK_KEYS = ("block", "rescue", "always")
+EXPECTED_CILIUM_HOST_TASK_FILES = {"tasks/main.yml", "tasks/validate.yml"}
 ANSIBLE_MODULE_KEY = re.compile(
     r"^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$"
 )
@@ -320,43 +337,59 @@ def validate_future_role_contract(contract: dict[str, Any]) -> None:
     )
 
 
-def task_module_names(value: object) -> set[str]:
-    if isinstance(value, dict):
-        names = {
-            key
-            for key in value
-            if isinstance(key, str) and ANSIBLE_MODULE_KEY.fullmatch(key) is not None
-        }
-        for nested in value.values():
-            names.update(task_module_names(nested))
-        return names
-    if isinstance(value, list):
-        names: set[str] = set()
-        for nested in value:
-            names.update(task_module_names(nested))
-        return names
-    return set()
-
-
-def command_module_arguments(
+def task_module_invocations(
     value: object,
     reference: str,
-) -> list[tuple[str, object]]:
-    if isinstance(value, dict):
-        commands = []
-        for key, nested in value.items():
-            nested_reference = f"{reference}.{key}"
-            if key == "ansible.builtin.command":
-                commands.append((nested_reference, nested))
-            else:
-                commands.extend(command_module_arguments(nested, nested_reference))
-        return commands
-    if isinstance(value, list):
-        commands = []
-        for index, nested in enumerate(value):
-            commands.extend(command_module_arguments(nested, f"{reference}[{index}]"))
-        return commands
-    return []
+) -> list[tuple[str, str, object]]:
+    require(isinstance(value, list), f"{reference} must contain an Ansible task list")
+    invocations = []
+    for index, task in enumerate(value):
+        task_reference = f"{reference}[{index}]"
+        require(isinstance(task, dict), f"{task_reference} must be a task mapping")
+
+        module_keys = [
+            key
+            for key in task
+            if isinstance(key, str) and ANSIBLE_MODULE_KEY.fullmatch(key) is not None
+        ]
+        unsupported_keys = [
+            key
+            for key in task
+            if key not in ALLOWED_CILIUM_HOST_TASK_KEYWORDS and key not in module_keys
+        ]
+        require(
+            not unsupported_keys,
+            f"{task_reference} has unsupported task or action keys: "
+            f"{unsupported_keys!r}",
+        )
+
+        block_keys = [key for key in CILIUM_HOST_TASK_BLOCK_KEYS if key in task]
+        if block_keys:
+            require(
+                "block" in block_keys,
+                f"{task_reference} may use rescue or always only with block",
+            )
+            require(
+                not module_keys,
+                f"{task_reference} must not combine a block with a module action",
+            )
+            for block_key in block_keys:
+                invocations.extend(
+                    task_module_invocations(
+                        task[block_key], f"{task_reference}.{block_key}"
+                    )
+                )
+            continue
+
+        require(
+            len(module_keys) == 1,
+            f"{task_reference} must use exactly one fully qualified module action",
+        )
+        module_name = module_keys[0]
+        invocations.append(
+            (f"{task_reference}.{module_name}", module_name, task[module_name])
+        )
+    return invocations
 
 
 def cilium_host_command_kind(command: object, reference: str) -> str:
@@ -404,11 +437,77 @@ def cilium_host_command_kind(command: object, reference: str) -> str:
     raise AssertionError(f"{reference} invokes an unapproved command: {argv!r}")
 
 
-def cilium_host_command_kinds(value: object, reference: str) -> list[str]:
-    return [
-        cilium_host_command_kind(command, command_reference)
-        for command_reference, command in command_module_arguments(value, reference)
+def load_cilium_host_task_documents() -> dict[str, object]:
+    paths = sorted(
+        path
+        for directory in (CILIUM_HOST_TASKS_PATH, CILIUM_HOST_HANDLERS_PATH)
+        if directory.exists()
+        for path in directory.rglob("*")
+        if path.is_file() and path.suffix in {".yml", ".yaml"}
+    )
+    return {
+        path.relative_to(CILIUM_HOST_ROLE_PATH).as_posix(): yaml.safe_load(
+            path.read_text(encoding="utf-8")
+        )
+        for path in paths
+    }
+
+
+def validate_cilium_host_task_documents(documents: dict[str, object]) -> None:
+    require(
+        set(documents) == EXPECTED_CILIUM_HOST_TASK_FILES,
+        "cilium_host executable files must be exactly tasks/main.yml and "
+        "tasks/validate.yml, got "
+        f"{sorted(documents)}",
+    )
+
+    main_tasks = documents["tasks/main.yml"]
+    require(
+        isinstance(main_tasks, list)
+        and len(main_tasks) == 1
+        and isinstance(main_tasks[0], dict),
+        "cilium_host main must have one boundary task",
+    )
+    require(
+        main_tasks[0].get("ansible.builtin.import_tasks") == "validate.yml",
+        "cilium_host main must import prerequisite validation only",
+    )
+
+    invocations = []
+    for path, document in sorted(documents.items()):
+        invocations.extend(task_module_invocations(document, path))
+
+    unexpected_modules = {
+        module_name
+        for _, module_name, _ in invocations
+        if module_name not in ALLOWED_CILIUM_HOST_MODULES
+    }
+    require(
+        not unexpected_modules,
+        f"cilium_host has operational modules: {sorted(unexpected_modules)}",
+    )
+
+    import_targets = [
+        arguments
+        for _, module_name, arguments in invocations
+        if module_name == "ansible.builtin.import_tasks"
     ]
+    require(
+        import_targets == ["validate.yml"],
+        "cilium_host must import only validate.yml from main.yml, got "
+        f"{import_targets!r}",
+    )
+
+    command_kinds = [
+        cilium_host_command_kind(arguments, invocation_reference)
+        for invocation_reference, module_name, arguments in invocations
+        if module_name == "ansible.builtin.command"
+    ]
+    require(
+        Counter(command_kinds) == Counter(APPROVED_CILIUM_HOST_COMMAND_KINDS),
+        "cilium_host command tasks must be exactly the approved modinfo and BPF "
+        f"probes, got {command_kinds}",
+    )
 
 
 def validate_repository_boundaries(contract: dict[str, Any]) -> None:
@@ -435,32 +534,7 @@ def validate_repository_boundaries(contract: dict[str, Any]) -> None:
         "bootstrap validation must require kube-proxy during the first lifecycle",
     )
 
-    cilium_host_main = yaml.safe_load(
-        (CILIUM_HOST_TASKS_PATH / "main.yml").read_text(encoding="utf-8")
-    )
-    require(len(cilium_host_main) == 1, "cilium_host main must have one boundary task")
-    require(
-        cilium_host_main[0].get("ansible.builtin.import_tasks") == "validate.yml",
-        "cilium_host must import prerequisite validation only",
-    )
-    command_kinds = []
-    for path in sorted(CILIUM_HOST_TASKS_PATH.glob("*.yml")):
-        document = yaml.safe_load(path.read_text(encoding="utf-8"))
-        unexpected = task_module_names(document) - ALLOWED_CILIUM_HOST_MODULES
-        require(
-            not unexpected,
-            f"{path.relative_to(REPOSITORY_ROOT)} has operational modules: "
-            f"{sorted(unexpected)}",
-        )
-        command_kinds.extend(
-            cilium_host_command_kinds(document, str(path.relative_to(REPOSITORY_ROOT)))
-        )
-
-    require(
-        command_kinds == APPROVED_CILIUM_HOST_COMMAND_KINDS,
-        "cilium_host command tasks must be exactly the approved modinfo and BPF "
-        f"probes, got {command_kinds}",
-    )
+    validate_cilium_host_task_documents(load_cilium_host_task_documents())
 
     require(
         not (REPOSITORY_ROOT / "ansible" / "roles" / "cilium").exists(),
@@ -473,31 +547,80 @@ def validate_repository_boundaries(contract: dict[str, Any]) -> None:
 
 
 def validate_regression_guards(contract: dict[str, Any]) -> None:
-    require_validation_failure(
-        "arbitrary cilium_host command regression",
-        lambda: cilium_host_command_kinds(
-            [
-                {
-                    "name": "Nested operational block fixture",
-                    "block": [
-                        {
-                            "name": "Apply an unapproved manifest",
-                            "ansible.builtin.command": {
-                                "argv": [
-                                    "/usr/bin/kubectl",
-                                    "apply",
-                                    "--filename",
-                                    "cilium.yml",
-                                ]
-                            },
-                        }
-                    ],
-                }
-            ],
-            "unapproved command fixture",
+    task_documents = load_cilium_host_task_documents()
+    boundary_cases = (
+        (
+            "arbitrary cilium_host command",
+            {
+                "name": "Nested operational block fixture",
+                "block": [
+                    {
+                        "name": "Apply an unapproved manifest",
+                        "ansible.builtin.command": {
+                            "argv": [
+                                "/usr/bin/kubectl",
+                                "apply",
+                                "--filename",
+                                "cilium.yml",
+                            ]
+                        },
+                    }
+                ],
+            },
+            "invokes an unapproved command",
         ),
-        "invokes an unapproved command",
+        (
+            "action syntax",
+            {
+                "name": "Hide an operational command behind action",
+                "action": "ansible.builtin.command /usr/bin/helm upgrade cilium",
+            },
+            "unsupported task or action keys",
+        ),
+        (
+            "local_action syntax",
+            {
+                "name": "Hide an operational command behind local_action",
+                "local_action": "ansible.builtin.command /usr/bin/cilium install",
+            },
+            "unsupported task or action keys",
+        ),
+        (
+            "unqualified command syntax",
+            {
+                "name": "Hide an operational command behind a short module name",
+                "command": "/usr/bin/cilium upgrade",
+            },
+            "unsupported task or action keys",
+        ),
+        (
+            "sibling command arguments",
+            {
+                "name": "Extend an approved command outside its module mapping",
+                "ansible.builtin.command": {
+                    "argv": [
+                        "/sbin/modinfo",
+                        "--field",
+                        "filename",
+                        "{{ item.module }}",
+                    ]
+                },
+                "args": {"chdir": "/tmp"},
+            },
+            "unsupported task or action keys",
+        ),
     )
+    for name, task, expected_message in boundary_cases:
+        drifted_documents = copy.deepcopy(task_documents)
+        drifted_documents["tasks/validate.yml"].append(task)
+        require_validation_failure(
+            f"{name} regression",
+            lambda fixture=drifted_documents: validate_cilium_host_task_documents(
+                fixture
+            ),
+            expected_message,
+        )
+
     require_validation_failure(
         "modified Python probe regression",
         lambda: cilium_host_command_kind(
@@ -512,6 +635,35 @@ def validate_regression_guards(contract: dict[str, Any]) -> None:
         ),
         "BPF probe body is not the explicitly approved probe",
     )
+
+    imported_documents = copy.deepcopy(task_documents)
+    imported_documents["tasks/validate.yml"].append(
+        {
+            "name": "Import an unapproved task file",
+            "ansible.builtin.import_tasks": "install.yaml",
+        }
+    )
+    require_validation_failure(
+        "additional task import regression",
+        lambda: validate_cilium_host_task_documents(imported_documents),
+        "must import only validate.yml from main.yml",
+    )
+
+    for extra_path in ("tasks/nested/install.yaml", "handlers/main.yml"):
+        extra_file_documents = copy.deepcopy(task_documents)
+        extra_file_documents[extra_path] = [
+            {
+                "name": "Install Cilium from an unapproved executable file",
+                "ansible.builtin.command": {"argv": ["/usr/bin/cilium", "install"]},
+            }
+        ]
+        require_validation_failure(
+            f"additional executable file {extra_path} regression",
+            lambda fixture=extra_file_documents: validate_cilium_host_task_documents(
+                fixture
+            ),
+            "executable files must be exactly tasks/main.yml and tasks/validate.yml",
+        )
 
     drift_cases = (
         ("routing default", "cilium_routing_mode", "default", "native"),
