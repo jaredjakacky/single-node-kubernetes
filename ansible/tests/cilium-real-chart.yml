@@ -17,30 +17,6 @@
           The real Cilium chart regression must run with the repository's
           pinned ansible-core 2.21.3 runtime.
 
-    - name: Require the checksum-verified Helm test binary
-      ansible.builtin.assert:
-        that:
-          - cilium_test_helm_binary is defined
-          - cilium_test_helm_binary is string
-          - cilium_test_helm_binary | length > 0
-        fail_msg: >-
-          The real Cilium chart regression requires the checksum-verified
-          pinned Helm binary supplied by CI.
-
-    - name: Inspect the checksum-verified Helm test binary
-      ansible.builtin.stat:
-        path: "{{ cilium_test_helm_binary }}"
-      register: cilium_test_helm_binary_stat
-
-    - name: Require the Helm test binary to exist
-      ansible.builtin.assert:
-        that:
-          - cilium_test_helm_binary_stat.stat.exists
-          - cilium_test_helm_binary_stat.stat.isreg
-        fail_msg: >-
-          The real Cilium chart regression requires an existing regular Helm
-          binary.
-
     - name: Define the exact production Cilium values
       ansible.builtin.include_role:
         name: cilium
@@ -55,9 +31,24 @@
 
     - name: Exercise the real immutable chart without cluster mutation
       block:
+        - name: Download the exact pinned Helm archive
+          ansible.builtin.get_url:
+            url: >-
+              https://get.helm.sh/helm-v{{ cilium_helm_version }}-linux-amd64.tar.gz
+            dest: "{{ cilium_real_chart_directory.path }}/helm.tar.gz"
+            checksum: "sha256:{{ cilium_helm_archive_sha256 }}"
+            mode: "0600"
+
+        - name: Extract the checksum-verified Helm archive
+          ansible.builtin.unarchive:
+            src: "{{ cilium_real_chart_directory.path }}/helm.tar.gz"
+            dest: "{{ cilium_real_chart_directory.path }}"
+            remote_src: true
+
         - name: Override only test filesystem paths
           ansible.builtin.set_fact:
-            cilium_helm_binary: "{{ cilium_test_helm_binary }}"
+            cilium_helm_binary: >-
+              {{ cilium_real_chart_directory.path }}/linux-amd64/helm
             cilium_values_path: >-
               {{ cilium_real_chart_directory.path }}/cilium-values.json
             cilium_helm_environment:
@@ -67,6 +58,29 @@
                 {{ cilium_real_chart_directory.path }}/helm-config
               HELM_DATA_HOME: >-
                 {{ cilium_real_chart_directory.path }}/helm-data
+
+        - name: Verify the extracted pinned Helm version
+          ansible.builtin.command:
+            argv:
+              - "{{ cilium_helm_binary }}"
+              - version
+              - --short
+          register: cilium_real_chart_helm_version
+          changed_when: false
+
+        - name: Require the exact pinned Helm version
+          ansible.builtin.assert:
+            that:
+              - >-
+                cilium_real_chart_helm_version.stdout
+                is match(
+                  '^v'
+                  ~ (cilium_helm_version | regex_escape)
+                  ~ '\\+g[0-9a-f]+$'
+                )
+            fail_msg: >-
+              The checksum-verified Helm archive did not report the expected
+              pinned Helm {{ cilium_helm_version }} version.
 
         - name: Create isolated Helm state directories
           ansible.builtin.file:
