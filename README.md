@@ -19,8 +19,13 @@ production credentials are intentionally kept outside this public repository.
 - Terraform-managed infrastructure
 - kubeadm-managed Kubernetes
 - containerd runtime
+- Cilium selected as the CNI; installation not yet implemented
 
-Additional platform components will be documented as they are added.
+The [Kubernetes and Cilium network architecture](docs/network-architecture.md)
+defines the IPv4 address plan, initial VXLAN and cluster-pool IPAM design,
+deferred features, and future reusable Ansible configuration contract. Its
+machine-readable companion is architecture data only; neither file installs
+Cilium or changes infrastructure.
 
 The Ansible lifecycle separates repeatable node convergence from Kubernetes
 control-plane bootstrap. Bootstrap uses kubeadm only on a confirmed-fresh host
