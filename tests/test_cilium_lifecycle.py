@@ -23,14 +23,72 @@ def load_yaml(path: pathlib.Path) -> Any:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def task_actions(tasks: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
+def task_actions(value: Any) -> list[tuple[str, dict[str, Any]]]:
     actions = []
-    for task in tasks:
-        for key, value in task.items():
+    if isinstance(value, list):
+        for item in value:
+            actions.extend(task_actions(item))
+    elif isinstance(value, dict):
+        for key, item in value.items():
             if key.startswith("ansible.builtin."):
-                require(isinstance(value, dict), f"{key} must use structured arguments")
-                actions.append((key, value))
+                require(isinstance(item, dict), f"{key} must use structured arguments")
+                actions.append((key, item))
+            else:
+                actions.extend(task_actions(item))
     return actions
+
+
+def task_command_argvs(value: Any, path: pathlib.Path) -> list[list[str]]:
+    commands = []
+    if isinstance(value, list):
+        for item in value:
+            commands.extend(task_command_argvs(item, path))
+    elif isinstance(value, dict):
+        arguments = value.get("ansible.builtin.command")
+        if arguments is not None:
+            require(
+                isinstance(arguments, dict),
+                f"{path}: command must use structured arguments",
+            )
+            argv = arguments.get("argv")
+            if isinstance(argv, list):
+                commands.append(argv)
+            else:
+                require(
+                    argv == "{{ item }}" and isinstance(value.get("loop"), list),
+                    f"{path}: dynamic command argv must resolve from a literal loop",
+                )
+                commands.extend(value["loop"])
+        for block in ("block", "rescue", "always"):
+            if block in value:
+                commands.extend(task_command_argvs(value[block], path))
+    return commands
+
+
+def role_helm_commands() -> list[tuple[pathlib.Path, list[str]]]:
+    commands = []
+    for path in sorted((CILIUM_ROLE / "tasks").glob("*.yml")):
+        tasks = load_yaml(path)
+        task_text = path.read_text(encoding="utf-8")
+        for module in ("ansible.builtin.raw", "ansible.builtin.shell"):
+            require(
+                module not in task_text,
+                f"{path}: Cilium commands must not be hidden in {module}",
+            )
+        for argv in task_command_argvs(tasks, path):
+            require(argv, f"{path}: command argv must not be empty")
+            executable = str(argv[0])
+            if "helm" in executable.lower():
+                require(
+                    executable == "{{ cilium_helm_binary }}",
+                    f"{path}: Helm must use the pinned cilium_helm_binary",
+                )
+                require(
+                    all(isinstance(argument, str) for argument in argv),
+                    f"{path}: Helm argv must contain only strings",
+                )
+                commands.append((path, argv))
+    return commands
 
 
 def validate_lifecycle_separation() -> None:
@@ -148,6 +206,91 @@ def validate_state_machine() -> None:
     require(
         "when: cilium_release_action == 'upgrade'" in converge_text,
         "upgrade must be state-gated",
+    )
+
+
+def validate_helm_lifecycle_contract() -> None:
+    commands = role_helm_commands()
+    operations = [argv[1] for _, argv in commands]
+    require(
+        set(operations)
+        == {
+            "get",
+            "install",
+            "list",
+            "show",
+            "status",
+            "template",
+            "upgrade",
+            "version",
+        },
+        "Cilium Helm operations must remain inside the reviewed CLI surface",
+    )
+
+    detect_path = CILIUM_ROLE / "tasks" / "detect.yml"
+    detect_lists = [
+        argv for path, argv in commands if path == detect_path and argv[1] == "list"
+    ]
+    require(len(detect_lists) == 1, "state detection must use exactly one Helm list")
+    require(
+        detect_lists[0]
+        == [
+            "{{ cilium_helm_binary }}",
+            "list",
+            "--namespace",
+            "{{ cilium_release_namespace }}",
+            "--filter",
+            "^cilium$",
+            "--output",
+            "json",
+            "--kubeconfig",
+            "{{ cilium_kubeconfig_path }}",
+        ],
+        "state detection must use Helm 4's all-status default with exact "
+        "scope and JSON",
+    )
+    status_filters = {
+        "--deployed",
+        "--failed",
+        "--pending",
+        "--superseded",
+        "--uninstalled",
+        "--uninstalling",
+    }
+    for _, argv in commands:
+        if argv[1] == "list":
+            require("--all" not in argv, "Helm 4 list does not support --all")
+            require(
+                status_filters.isdisjoint(argv),
+                "Helm list must retain the Helm 4 default that includes every status",
+            )
+
+    mutations = [
+        (path, argv) for path, argv in commands if argv[1] in ("install", "upgrade")
+    ]
+    require(
+        [(path.name, argv[1]) for path, argv in mutations]
+        == [("converge.yml", "install"), ("converge.yml", "upgrade")],
+        "install and upgrade in converge.yml must remain the only Helm mutations",
+    )
+    for _, argv in mutations:
+        require(
+            "--rollback-on-failure" in argv,
+            f"Helm {argv[1]} must roll back on failure",
+        )
+        require("--wait" in argv, f"Helm {argv[1]} must wait deterministically")
+        require(
+            "--wait-for-jobs" in argv,
+            f"Helm {argv[1]} must wait for jobs",
+        )
+        require("--timeout" in argv, f"Helm {argv[1]} must retain its timeout")
+    require(
+        "--history-max" in mutations[1][1] and "10" in mutations[1][1],
+        "Helm upgrade must retain the bounded history limit",
+    )
+    require(
+        all("--atomic" not in argv for _, argv in commands),
+        "deprecated Helm --atomic automation must not return",
     )
 
 
@@ -280,6 +423,7 @@ def main() -> None:
     validate_lifecycle_separation()
     validate_pins()
     validate_state_machine()
+    validate_helm_lifecycle_contract()
     validate_runtime_proofs()
     validate_topology_policy_separation()
     validate_destructive_safeguards()
