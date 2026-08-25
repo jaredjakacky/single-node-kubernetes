@@ -1,0 +1,40 @@
+---
+- name: Initialize the Cilium input validation result
+  ansible.builtin.set_fact:
+    cilium_test_input_failed: false
+
+- name: Validate the Cilium input case
+  block:
+    - name: Invoke Cilium input validation
+      ansible.builtin.include_role:
+        name: cilium
+        tasks_from: validate_inputs.yml
+      vars:
+        cilium_cluster_name: >-
+          {{ cilium_test_input_case.cluster_name | default('production-a') }}
+        cilium_cluster_id: >-
+          {{ cilium_test_input_case.cluster_id | default(42) }}
+        cilium_cluster_pool_ipv4_cidr: >-
+          {{ cilium_test_input_case.pod_cidr | default('10.200.0.0/16') }}
+        cilium_cluster_pool_ipv4_mask_size: >-
+          {{ cilium_test_input_case.mask_size | default(24) }}
+        cilium_chart_version: >-
+          {{ cilium_test_input_case.chart_version | default('1.20.1') }}
+        cilium_routing_mode: >-
+          {{ cilium_test_input_case.routing_mode | default('tunnel') }}
+        cilium_tunnel_protocol: >-
+          {{ cilium_test_input_case.tunnel_protocol | default('vxlan') }}
+        cilium_allow_upgrade: >-
+          {{ cilium_test_input_case.allow_upgrade | default(false) }}
+  rescue:
+    - name: Record rejected Cilium inputs
+      ansible.builtin.set_fact:
+        cilium_test_input_failed: true
+
+- name: Require the expected Cilium input result
+  ansible.builtin.assert:
+    that:
+      - cilium_test_input_failed == cilium_test_input_case.should_fail
+    fail_msg: >-
+      Case {{ cilium_test_input_case.name }} produced an unexpected validation
+      result.

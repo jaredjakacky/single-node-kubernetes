@@ -1,0 +1,187 @@
+---
+- name: Validate Cilium topology-health inputs
+  ansible.builtin.assert:
+    that:
+      - cilium_topology_nodes | type_debug == 'list'
+      - cilium_topology_nodes | length > 0
+      - cilium_topology_agent_status | type_debug == 'dict'
+      - cilium_topology_agent_pods | type_debug == 'list'
+      - cilium_topology_runtime_results | type_debug == 'list'
+    fail_msg: >-
+      Topology-neutral Cilium health validation requires non-empty Kubernetes
+      Nodes, DaemonSet status, active agent Pods, and per-agent runtime results.
+
+- name: Derive expected Cilium topology from Kubernetes Nodes
+  ansible.builtin.set_fact:
+    cilium_expected_node_count: "{{ cilium_topology_nodes | length }}"
+    cilium_expected_node_names: >-
+      {{ cilium_topology_nodes | map(attribute='metadata.name') | sort | list }}
+
+- name: Require unique Kubernetes Node identities
+  ansible.builtin.assert:
+    that:
+      - cilium_expected_node_names | length == cilium_expected_node_count
+      - >-
+        cilium_expected_node_names | unique | length
+        == cilium_expected_node_count
+    fail_msg: >-
+      Kubernetes Node identities are missing, duplicated, or invalid:
+      {{ cilium_expected_node_names | to_nice_json }}
+
+- name: Require every Kubernetes Node to have exactly one Ready=True condition
+  ansible.builtin.assert:
+    that:
+      - cilium_topology_node_ready_conditions | length == 1
+      - cilium_topology_node_ready_conditions[0]['status'] == 'True'
+    fail_msg: >-
+      Kubernetes Node {{ item['metadata']['name'] }} must have exactly one
+      Ready=True condition: {{ item | to_nice_json }}
+  loop: "{{ cilium_topology_nodes }}"
+  loop_control:
+    label: "{{ item['metadata']['name'] }}"
+  vars:
+    cilium_topology_node_ready_conditions: >-
+      {{
+        item['status']['conditions']
+        | selectattr('type', 'equalto', 'Ready')
+        | list
+      }}
+
+- name: Require one Ready and Available Cilium agent per Kubernetes Node
+  ansible.builtin.assert:
+    that:
+      - >-
+        cilium_topology_agent_status['status']['desiredNumberScheduled']
+        == cilium_expected_node_count
+      - >-
+        cilium_topology_agent_status['status']['currentNumberScheduled']
+        == cilium_expected_node_count
+      - >-
+        cilium_topology_agent_status['status']['updatedNumberScheduled']
+        == cilium_expected_node_count
+      - >-
+        cilium_topology_agent_status['status']['numberReady']
+        == cilium_expected_node_count
+      - >-
+        cilium_topology_agent_status['status']['numberAvailable']
+        == cilium_expected_node_count
+      - >-
+        (
+          cilium_topology_agent_status['status']['numberMisscheduled']
+          | default(0)
+        ) == 0
+      - >-
+        (
+          cilium_topology_agent_status['status']['numberUnavailable']
+          | default(0)
+        ) == 0
+    fail_msg: >-
+      Cilium DaemonSet desired, current, updated, Ready, and Available counts
+      must all match the {{ cilium_expected_node_count }} Kubernetes Nodes:
+      {{ cilium_topology_agent_status['status'] | to_nice_json }}
+
+- name: Validate every active Cilium agent Pod
+  ansible.builtin.assert:
+    that:
+      - item['metadata']['name'] is match('^cilium-[a-z0-9-]+$')
+      - item['metadata']['deletionTimestamp'] is not defined
+      - item['status']['phase'] == 'Running'
+      - item['spec']['nodeName'] in cilium_expected_node_names
+    fail_msg: >-
+      Active Cilium agent Pods must be Running, non-terminating, and assigned
+      to an expected Kubernetes Node: {{ item | to_nice_json }}
+  loop: "{{ cilium_topology_agent_pods }}"
+  loop_control:
+    label: "{{ item['metadata']['name'] }}"
+
+- name: Derive active Cilium agent topology
+  ansible.builtin.set_fact:
+    cilium_topology_agent_pod_names: >-
+      {{
+        cilium_topology_agent_pods
+        | map(attribute='metadata.name') | sort | list
+      }}
+    cilium_topology_agent_node_names: >-
+      {{
+        cilium_topology_agent_pods
+        | map(attribute='spec.nodeName') | sort | list
+      }}
+
+- name: Require exactly one active Cilium agent per Kubernetes Node
+  ansible.builtin.assert:
+    that:
+      - >-
+        cilium_topology_agent_pod_names | length
+        == cilium_expected_node_count
+      - >-
+        cilium_topology_agent_pod_names | unique | length
+        == cilium_expected_node_count
+      - cilium_topology_agent_node_names == cilium_expected_node_names
+      - >-
+        cilium_topology_agent_node_names | unique | length
+        == cilium_expected_node_count
+    fail_msg: >-
+      Expected exactly one active Cilium agent on every Kubernetes Node.
+      Nodes: {{ cilium_expected_node_names | to_nice_json }}
+      Agent Pods: {{ cilium_topology_agent_pods | to_nice_json }}
+
+- name: Require one runtime status result per active Cilium agent
+  ansible.builtin.assert:
+    that:
+      - >-
+        cilium_topology_runtime_results | length
+        == cilium_expected_node_count
+      - >-
+        cilium_topology_runtime_results
+        | map(attribute='item') | sort | list
+        == cilium_topology_agent_pod_names
+    fail_msg: >-
+      Runtime status must be collected once from every active Cilium agent.
+
+- name: Validate every Cilium agent runtime and cluster-health result
+  ansible.builtin.assert:
+    that:
+      - item['rc'] == 0
+      - >-
+        item['stdout']
+        is search('(?m)^Kubernetes:[ \t]+Ok(?:[ \t].*)?$')
+      - >-
+        item['stdout']
+        is search('(?m)^Cilium:[ \t]+Ok(?:[ \t].*)?$')
+      - item['stdout'] is search('(?m)^IPAM:\s+IPv4:')
+      - >-
+        item['stdout']
+        is search(
+          '(?m)^KubeProxyReplacement:[ \t]+False(?:[ \t].*)?$'
+        )
+      - >-
+        item['stdout']
+        is search('(?m)^Routing:\s+Network: Tunnel \[vxlan\]')
+      - >-
+        item['stdout']
+        is search('(?m)^Masquerading:\s+IPTables \[IPv4: Enabled')
+      - >-
+        item['stdout']
+        is search('(?m)^Controller Status:\s+[0-9]+/[0-9]+ healthy')
+      - >-
+        item['stdout']
+        is search('(?m)^Hubble:[ \t]+Disabled(?:[ \t].*)?$')
+      - >-
+        item['stdout']
+        is search(
+          '(?m)^Cluster health:\s+'
+          ~ (cilium_expected_node_count | string)
+          ~ '/'
+          ~ (cilium_expected_node_count | string)
+          ~ ' reachable(?:[ \t].*)?$'
+        )
+    fail_msg: |-
+      Cilium agent {{ item['item'] }} did not prove healthy Kubernetes,
+      datapath, IPAM, controllers, VXLAN, iptables masquerading, disabled
+      Hubble, and {{ cilium_expected_node_count }}/{{ cilium_expected_node_count }}
+      cluster reachability.
+
+      {{ item['stdout'] | default('', true) }}
+  loop: "{{ cilium_topology_runtime_results }}"
+  loop_control:
+    label: "{{ item['item'] }}"

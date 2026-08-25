@@ -30,8 +30,8 @@ modules, or active IPv4 forwarding cannot support that design.
 
 The detailed [Kubernetes and Cilium network architecture](../docs/network-architecture.md)
 defines the non-overlapping address plan, VXLAN and cluster-pool IPAM choices,
-deferred features, permanent identity requirements, and future public-role
-input contract. It is an architecture boundary, not a deployment procedure.
+deferred features, permanent identity requirements, and public-role input
+contract. The dedicated deployment procedure below implements that contract.
 
 The base role continues to own cgroup v2 and IPv4 forwarding. Debian's kernel
 owns the required built-in capabilities and loadable modules; the Cilium host
@@ -122,10 +122,10 @@ control-plane node is created without the default `NoSchedule` taint so it can
 host workloads after the CNI is healthy. The API advertise address and stable
 control-plane endpoint must be supplied explicitly by production inventory.
 
-Cilium is not installed by bootstrap. Cilium's default cluster-pool IPAM will
-own Pod CIDR allocation, so the kubeadm configuration deliberately omits
-`networking.podSubnet`. The future Cilium deployment must explicitly choose a
-non-overlapping IPv4 pool rather than accept Cilium's broad default. Until the
+Cilium is not installed by bootstrap. Cilium's cluster-pool IPAM owns Pod CIDR
+allocation, so the kubeadm configuration deliberately omits
+`networking.podSubnet`. The Cilium deployment explicitly chooses a
+non-overlapping IPv4 pool rather than accepting Cilium's broad default. Until the
 CNI is installed, the Node may be `NotReady` and CoreDNS may be unavailable;
 neither condition is treated as a bootstrap failure. Bootstrap requires exactly
 one determinate Node `Ready` condition, accepting either `True` or `False`, and
@@ -144,19 +144,119 @@ ansible-playbook \
   --extra-vars kubernetes_bootstrap_advertise_address=<node-ipv4> \
   --extra-vars kubernetes_bootstrap_control_plane_endpoint=<stable-name-or-ip>:6443 \
   playbooks/bootstrap.yml
+ansible-playbook --inventory <production-inventory> playbooks/cilium.yml
 ```
 
 Production inventory should place exactly one host in the
 `kubernetes_control_plane` group and set the bootstrap address values there
-rather than normally passing them on the command line. The endpoint must
+rather than normally passing them on the command line. It must also define the
+permanent, topology-neutral `cilium_cluster_name` and unique integer
+`cilium_cluster_id` (1 through 255). The role defaults the reserved first-cluster
+pool and node allocation to `10.200.0.0/16` and `/24`, but production inventory
+should state `cilium_cluster_pool_ipv4_cidr` and
+`cilium_cluster_pool_ipv4_mask_size` explicitly so the deployed address plan is
+reviewable alongside the private network environment. The endpoint must
 resolve over IPv4 to the advertise address from the node itself. The service
-subnet defaults to `10.96.0.0/12`; confirm it and the future Cilium Pod CIDR do
+subnet defaults to `10.96.0.0/12`; confirm it and the Cilium Pod CIDR do
 not overlap host, VPN, administration, or other cluster networks before the
 first bootstrap. Bootstrap also requires at least 5 GiB and 100,000 inodes free
 on each filesystem backing containerd, kubelet, and local etcd; these thresholds
 are typed role defaults and can be raised by production inventory. The bootstrap
 playbook deliberately rejects Ansible check mode because its runtime health
 checks and one-time initialization cannot be represented faithfully that way.
+
+## Cilium lifecycle
+
+`playbooks/cilium.yml` is the only deployment entry point for cluster
+networking. It expects node convergence and a healthy kubeadm bootstrap to have
+completed, requires the local root-owned `0600`
+`/etc/kubernetes/admin.conf`, verifies Kubernetes 1.36 and the retained
+`kube-proxy` DaemonSet, and executes Helm and kubectl only on the control-plane
+node. The kubeconfig is never fetched to the Ansible controller.
+
+Phase 1 remains an intentionally single-node deployment. Preflight reads the
+live Kubernetes Node set and fails before Helm state management unless it
+contains exactly one Node. A second Node is not supported until the planned
+private-underlay and second-node migration implements and validates firewall,
+MTU, and cross-node behavior. This deployment-policy gate is separate from the
+generic health validator described below.
+
+The role installs official Helm `4.2.4` from `get.helm.sh` under a versioned
+`/usr/local/lib/helm` path after checking the pinned archive SHA-256. It installs
+Cilium chart `1.20.1` from the official
+`oci://quay.io/cilium/charts/cilium` repository by immutable manifest digest.
+There is no latest-version lookup, repository bootstrap, or downloaded script.
+The canonical user values are kept as root-owned `0600` JSON under
+`/etc/single-node-kubernetes`; JSON is valid Helm values input and permits an
+exact typed comparison with `helm get values` on every rerun.
+
+The configured release is explicitly IPv4-only, uses cluster-pool IPAM with the
+supplied pool and `/24` allocations, VXLAN tunneling, retained kube-proxy,
+iptables IPv4 masquerading, Cilium-managed bpffs, and one operator replica.
+Hubble, Relay, encryption/WireGuard, Gateway API, Cilium Ingress, BGP,
+ClusterMesh, BIG TCP, Envoy, and kube-proxy replacement are disabled. None of
+those settings is an opportunistic role toggle. Layer 7 policy is also disabled
+while standard Kubernetes NetworkPolicy remains enabled; changing one of these
+boundaries requires a separate architecture migration.
+
+Before a chart mutation, the role holds a host-local lock and classifies Helm,
+CNI configuration, the Cilium agent/operator/config map, and a representative
+Cilium CRD together. The supported states are:
+
+- A genuinely empty CNI boundary installs the pinned release.
+
+- The exact deployed chart with byte-for-type-equivalent canonical values is
+  validated without a Helm install or upgrade.
+
+- An older Cilium 1.20 patch with the same canonical values upgrades only when
+  `cilium_allow_upgrade=true` is supplied deliberately.
+
+- Configuration drift, another CNI, unmanaged Cilium resources, incomplete
+  managed state, failed/pending releases, newer releases, downgrades, and
+  cross-minor upgrades fail closed. The role does not adopt, uninstall, delete,
+  reset, or reinitialize networking state.
+
+Every successful run proves more than Helm readiness. The topology-neutral
+health validator derives its expected count from the live Kubernetes Node set,
+requires every Node to have exactly one `Ready=True` condition, and requires
+the Cilium DaemonSet's desired, current, updated, Ready, and Available counts to
+match. It maps exactly one active agent to every Node and validates
+Kubernetes/datapath/IPAM/controllers, VXLAN, iptables masquerading, disabled
+Hubble, and `N/N` cluster reachability from every agent using `cilium-dbg`.
+The Phase-1 operator remains one healthy replica. Ready CoreDNS Pods are also
+required before the role creates an isolated temporary namespace with
+digest-pinned Kubernetes e2e images and proves:
+
+- a validation Pod receives an IPv4 address inside the configured Pod pool;
+
+- Pod-to-Pod and direct ClusterIP Service connections work;
+
+- a Service FQDN resolves through cluster DNS and connects;
+
+- bounded TCP egress to `registry.k8s.io:443` works; and
+
+- an ingress NetworkPolicy permits a labeled client while a differently
+  labeled client times out on the same server and port.
+
+The lifecycle removes only the validation namespace that it created, including
+after validation failure. Because those resources leave no retained state,
+their commands deliberately do not report Ansible changes. A second run against
+the exact release takes the `validate` action and performs no Helm mutation.
+
+On failure, the role emits current Nodes, all Pods, Cilium/CoreDNS workloads,
+events, Helm status, `cilium-dbg status`, and validation resources before
+returning the failure. It never prints kubeconfig contents or Secret data. If a
+run is terminated before Ansible's cleanup executes, confirm that no lifecycle
+is active before removing the abandoned lock under `/run/lock`; similarly,
+inspect and remove a stale `cilium-validation` namespace only after confirming
+ownership. Repair inconsistent valuable state in place or follow a separately
+approved Cilium recovery/rollback runbook—do not make the role bypass its state
+classification.
+
+Kube-proxy replacement remains a future, independently reviewed migration.
+Multi-node underlay/MTU work, redundant operators, Hubble, and WireGuard are
+also deferred until their architecture and rollback behavior are implemented
+and validated explicitly.
 
 The Terraform firewall currently exposes SSH but not the Kubernetes API. Local
 validation over SSH does not require public API access. Choose an explicit
@@ -194,11 +294,14 @@ checks with:
 ```sh
 python -m pip install -r ansible/requirements.txt
 python tests/test_network_architecture.py
+python tests/test_cilium_lifecycle.py
 cd ansible
 ansible-galaxy collection install -r requirements.yml
 ansible-lint
 ansible-playbook --inventory inventory/ci.yml --syntax-check playbooks/node.yml
 ansible-playbook --inventory inventory/ci.yml --syntax-check playbooks/bootstrap.yml
+ansible-playbook --inventory inventory/ci.yml --syntax-check playbooks/cilium.yml
+ansible-playbook tests/cilium-contract.yml
 ansible-playbook tests/bootstrap-state.yml
 ansible-playbook tests/kubeadm-flags.yml
 ansible-playbook tests/node-conditions.yml

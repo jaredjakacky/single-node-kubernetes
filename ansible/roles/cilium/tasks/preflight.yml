@@ -1,0 +1,114 @@
+---
+- name: Inspect the privileged Kubernetes kubeconfig
+  ansible.builtin.stat:
+    path: "{{ cilium_kubeconfig_path }}"
+    follow: false
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
+  register: cilium_kubeconfig
+
+- name: Require the local privileged Kubernetes kubeconfig
+  ansible.builtin.assert:
+    that:
+      - cilium_kubeconfig.stat.exists
+      - cilium_kubeconfig.stat.isreg
+      - not cilium_kubeconfig.stat.islnk
+      - cilium_kubeconfig.stat.pw_name == 'root'
+      - cilium_kubeconfig.stat.gr_name == 'root'
+      - cilium_kubeconfig.stat.mode == '0600'
+    fail_msg: >-
+      {{ cilium_kubeconfig_path }} must be a root-owned 0600 regular file on
+      the control-plane node. Credentials are never copied to the controller.
+
+- name: Require the Kubernetes API to be ready
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - get
+      - --raw=/readyz
+  register: cilium_api_ready
+  changed_when: false
+  retries: 12
+  delay: 5
+  until:
+    - cilium_api_ready.rc == 0
+    - cilium_api_ready.stdout == 'ok'
+
+- name: Read the Kubernetes server version
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - version
+      - --output=json
+  register: cilium_kubernetes_version_output
+  changed_when: false
+
+- name: Require the Kubernetes 1.36 architecture boundary
+  ansible.builtin.assert:
+    that:
+      - >-
+        (cilium_kubernetes_version_output.stdout | from_json)
+        ['serverVersion']['gitVersion'] is match('^v1\.36\.[0-9]+$')
+    fail_msg: >-
+      Cilium may be deployed only against the repository's Kubernetes 1.36
+      lifecycle.
+
+- name: Read Kubernetes Nodes for the Phase-1 policy gate
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - get
+      - nodes
+      - --output=json
+  register: cilium_phase_one_nodes_output
+  changed_when: false
+
+- name: Enforce the Phase-1 deployment topology
+  ansible.builtin.import_tasks: enforce_phase_one_policy.yml
+  vars:
+    cilium_phase_one_nodes: >-
+      {{ (cilium_phase_one_nodes_output.stdout | from_json)['items'] }}
+
+- name: Require the retained kube-proxy DaemonSet
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - kube-system
+      - get
+      - daemonset
+      - kube-proxy
+      - --output=name
+  register: cilium_kube_proxy
+  changed_when: false
+
+- name: Validate the retained kube-proxy boundary
+  ansible.builtin.assert:
+    that:
+      - cilium_kube_proxy.stdout == 'daemonset.apps/kube-proxy'
+    fail_msg: >-
+      kube-proxy must exist for this lifecycle. Kube-proxy replacement remains
+      a separately reviewed future migration.
+
+- name: Require retained kube-proxy pods to be rolled out
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - kube-system
+      - rollout
+      - status
+      - daemonset/kube-proxy
+      - --timeout={{ cilium_helm_timeout }}
+  changed_when: false

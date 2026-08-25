@@ -1,0 +1,34 @@
+---
+# These are implementation integrity pins, not caller-selectable inputs.
+# renovate: datasource=github-releases depName=helm/helm versioning=semver
+cilium_helm_version: "4.2.4"
+# Renovate may propose the version; reviewers must copy the matching checksum
+# from the official get.helm.sh .sha256sum asset and update the contract test.
+cilium_helm_archive_sha256: >-
+  c306b46f719b0a4da32d0f78ee21bf90ce8d602f15b22ab753f0674d1670a7f3
+
+# renovate: datasource=docker versioning=semver
+cilium_supported_chart_version: "1.20.1"
+cilium_chart_oci_repository: oci://quay.io/cilium/charts/cilium
+cilium_chart_digest: >-
+  sha256:906ce40d35daad838d12add8a5ba7033e767767f51799a93c7eace2cec9cdc05
+
+cilium_helm_binary: /usr/local/bin/helm
+cilium_kubeconfig_path: /etc/kubernetes/admin.conf
+cilium_kubernetes_service_cidr: 10.96.0.0/12
+cilium_values_directory: /etc/single-node-kubernetes
+cilium_values_path: /etc/single-node-kubernetes/cilium-values.json
+cilium_release_name: cilium
+cilium_release_namespace: kube-system
+cilium_expected_cni_config_path: /etc/cni/net.d/05-cilium.conflist
+
+# Kubernetes v1.36.4's own e2e image pin. The multi-architecture manifest
+# digest prevents a mutable tag from changing the validation workload.
+cilium_validation_image: >-
+  registry.k8s.io/e2e-test-images/agnhost@sha256:a62f40481e05709988fe44e5035b2e0f553cd52bf0ae4e83614928255b00e8c1
+cilium_validation_egress_endpoint: registry.k8s.io:443
+
+cilium_helm_environment:
+  HELM_CACHE_HOME: /var/cache/helm
+  HELM_CONFIG_HOME: /etc/helm
+  HELM_DATA_HOME: /var/lib/helm

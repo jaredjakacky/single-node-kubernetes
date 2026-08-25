@@ -1,0 +1,25 @@
+---
+- name: Initialize the Phase-1 policy result
+  ansible.builtin.set_fact:
+    cilium_test_policy_failed: false
+
+- name: Evaluate the Phase-1 deployment policy case
+  block:
+    - name: Invoke the Phase-1 topology policy
+      ansible.builtin.include_role:
+        name: cilium
+        tasks_from: enforce_phase_one_policy.yml
+      vars:
+        cilium_phase_one_nodes: "{{ cilium_test_policy_case.nodes }}"
+  rescue:
+    - name: Record rejected Phase-1 topology
+      ansible.builtin.set_fact:
+        cilium_test_policy_failed: true
+
+- name: Require the expected Phase-1 policy result
+  ansible.builtin.assert:
+    that:
+      - cilium_test_policy_failed == cilium_test_policy_case.should_fail
+    fail_msg: >-
+      Case {{ cilium_test_policy_case.name }} produced an unexpected Phase-1
+      deployment-policy result.

@@ -1,0 +1,16 @@
+---
+- name: Create the private Cilium configuration directory
+  ansible.builtin.file:
+    path: "{{ cilium_values_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Render the exact Cilium Helm values
+  ansible.builtin.template:
+    src: values.json.j2
+    dest: "{{ cilium_values_path }}"
+    owner: root
+    group: root
+    mode: "0600"

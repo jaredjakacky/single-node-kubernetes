@@ -47,6 +47,10 @@ jobs:
         working-directory: .
         run: python tests/test_network_architecture.py
 
+      - name: Test Cilium lifecycle contract
+        working-directory: .
+        run: python tests/test_cilium_lifecycle.py
+
       - name: Install Ansible collections
         run: ansible-galaxy collection install -r requirements.yml
 
@@ -80,6 +84,13 @@ jobs:
             --inventory inventory/ci.yml \
             --syntax-check \
             playbooks/bootstrap.yml
+          ansible-playbook \
+            --inventory inventory/ci.yml \
+            --syntax-check \
+            playbooks/cilium.yml
+
+      - name: Test Cilium inputs, values, and lifecycle state
+        run: ansible-playbook tests/cilium-contract.yml
 
       - name: Test bootstrap task-name rendering
         run: python tests/test_bootstrap_task_name_warnings.py

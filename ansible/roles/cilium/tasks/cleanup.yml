@@ -1,0 +1,27 @@
+---
+- name: Delete the lifecycle-owned validation namespace
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - delete
+      - namespace
+      - "{{ cilium_validation_namespace }}"
+      - --ignore-not-found
+      - --wait=true
+      - "--timeout={{ cilium_validation_timeout }}"
+  register: cilium_validation_cleanup
+  changed_when: false
+  failed_when: false
+  when: cilium_validation_namespace_created | default(false)
+
+- name: Report validation cleanup failure
+  ansible.builtin.debug:
+    msg: >-
+      Cleanup of namespace {{ cilium_validation_namespace }} failed. Remove it
+      only after confirming that it belongs to this lifecycle. kubectl stderr:
+      {{ cilium_validation_cleanup.stderr | default('not available', true) }}
+  when:
+    - cilium_validation_namespace_created | default(false)
+    - cilium_validation_cleanup.rc != 0

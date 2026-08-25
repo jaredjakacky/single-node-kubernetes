@@ -1,0 +1,39 @@
+---
+- name: Validate Cilium lifecycle inputs
+  ansible.builtin.import_tasks: validate_inputs.yml
+
+- name: Validate the initialized control-plane boundary
+  ansible.builtin.import_tasks: preflight.yml
+
+- name: Install and validate the pinned Helm client
+  ansible.builtin.import_tasks: install_helm.yml
+
+- name: Define the exact Cilium configuration
+  ansible.builtin.import_tasks: define_values.yml
+
+- name: Detect the existing CNI and Cilium state
+  ansible.builtin.import_tasks: detect.yml
+
+- name: Classify the existing Cilium lifecycle state
+  ansible.builtin.import_tasks: classify.yml
+
+- name: Record the selected Cilium lifecycle action
+  ansible.builtin.set_fact:
+    cilium_selected_release_action: "{{ cilium_release_action }}"
+
+- name: Render the classified Cilium configuration
+  ansible.builtin.import_tasks: configure.yml
+
+- name: Apply the selected Cilium lifecycle action
+  ansible.builtin.import_tasks: converge.yml
+
+- name: Redetect Cilium state after a chart mutation
+  ansible.builtin.import_tasks: detect.yml
+  when: cilium_selected_release_action in ['install', 'upgrade']
+
+- name: Require an exact managed state after a chart mutation
+  ansible.builtin.import_tasks: classify.yml
+  when: cilium_selected_release_action in ['install', 'upgrade']
+
+- name: Validate the installed Cilium release and cluster network
+  ansible.builtin.import_tasks: validate.yml

@@ -1,0 +1,101 @@
+---
+- name: Initialize the topology-health validation result
+  ansible.builtin.set_fact:
+    cilium_test_topology_failed: false
+
+- name: Evaluate the topology-neutral health case
+  block:
+    - name: Invoke topology-neutral Cilium health validation
+      ansible.builtin.include_role:
+        name: cilium
+        tasks_from: validate_topology.yml
+      vars:
+        cilium_topology_nodes:
+          - metadata:
+              name: node-a
+            status:
+              conditions:
+                - type: MemoryPressure
+                  status: "False"
+                - type: Ready
+                  status: "True"
+          - metadata:
+              name: node-b
+            status:
+              conditions:
+                - type: Ready
+                  status: >-
+                    {{
+                      cilium_test_topology_case.second_node_ready
+                      | default('True')
+                    }}
+        cilium_topology_agent_status:
+          status:
+            desiredNumberScheduled: 2
+            currentNumberScheduled: 2
+            updatedNumberScheduled: 2
+            numberReady: >-
+              {{ cilium_test_topology_case.agent_ready | default(2) }}
+            numberAvailable: >-
+              {{ cilium_test_topology_case.agent_available | default(2) }}
+            numberMisscheduled: 0
+            numberUnavailable: >-
+              {{ cilium_test_topology_case.agent_unavailable | default(0) }}
+        cilium_topology_agent_pods:
+          - metadata:
+              name: cilium-node-a
+            spec:
+              nodeName: node-a
+            status:
+              phase: Running
+          - metadata:
+              name: cilium-node-b
+            spec:
+              nodeName: node-b
+            status:
+              phase: Running
+        cilium_topology_runtime_results:
+          - item: cilium-node-a
+            rc: 0
+            stdout: |
+              Kubernetes: Ok
+              Cilium: Ok
+              IPAM: IPv4: 4/65535 allocated
+              KubeProxyReplacement: False
+              Routing: Network: Tunnel [vxlan]
+              Masquerading: IPTables [IPv4: Enabled, IPv6: Disabled]
+              Controller Status: 10/10 healthy
+              Hubble: Disabled
+              Cluster health: 2/2 reachable
+          - item: cilium-node-b
+            rc: 0
+            stdout: |
+              Kubernetes: Ok
+              Cilium: Ok
+              IPAM: IPv4: 4/65535 allocated
+              KubeProxyReplacement: False
+              Routing: Network: Tunnel [vxlan]
+              Masquerading: IPTables [IPv4: Enabled, IPv6: Disabled]
+              Controller Status: 10/10 healthy
+              Hubble: Disabled
+              Cluster health: {{
+                cilium_test_topology_case.second_agent_cluster_health
+                | default('2/2')
+              }} reachable
+  rescue:
+    - name: Record rejected topology health
+      ansible.builtin.set_fact:
+        cilium_test_topology_failed: true
+
+- name: Require the expected topology-health result
+  ansible.builtin.assert:
+    that:
+      - >-
+        cilium_test_topology_failed
+        == cilium_test_topology_case.should_fail
+      - >-
+        cilium_test_topology_failed
+        or cilium_expected_node_count == 2
+    fail_msg: >-
+      Case {{ cilium_test_topology_case.name }} produced an unexpected generic
+      topology-health result.

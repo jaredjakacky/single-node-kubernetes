@@ -1,0 +1,10 @@
+---
+- name: Require the supported Phase-1 Kubernetes topology
+  ansible.builtin.assert:
+    that:
+      - cilium_phase_one_nodes | type_debug == 'list'
+      - cilium_phase_one_nodes | length == 1
+    fail_msg: >-
+      This lifecycle phase supports exactly one Kubernetes Node. Multi-node
+      deployment requires the planned private-underlay and second-node
+      migration. Found {{ cilium_phase_one_nodes | length }} Nodes.
