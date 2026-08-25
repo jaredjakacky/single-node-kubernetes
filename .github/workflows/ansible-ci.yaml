@@ -77,6 +77,9 @@ jobs:
             --syntax-check \
             playbooks/bootstrap.yml
 
+      - name: Test bootstrap task-name rendering
+        run: python tests/test_bootstrap_task_name_warnings.py
+
       - name: Test bootstrap state classification as root
         run: sudo "$(command -v ansible-playbook)" tests/bootstrap-state.yml
 
