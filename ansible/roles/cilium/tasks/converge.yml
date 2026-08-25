@@ -79,7 +79,7 @@
       - "{{ cilium_values_path }}"
       - --kubeconfig
       - "{{ cilium_kubeconfig_path }}"
-      - --atomic
+      - --rollback-on-failure
       - --wait
       - --wait-for-jobs
       - --timeout
@@ -101,7 +101,7 @@
       - "{{ cilium_values_path }}"
       - --kubeconfig
       - "{{ cilium_kubeconfig_path }}"
-      - --atomic
+      - --rollback-on-failure
       - --wait
       - --wait-for-jobs
       - --timeout

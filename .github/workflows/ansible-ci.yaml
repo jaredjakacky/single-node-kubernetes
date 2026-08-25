@@ -51,6 +51,10 @@ jobs:
         working-directory: .
         run: python tests/test_cilium_lifecycle.py
 
+      - name: Test pinned Helm CLI compatibility
+        working-directory: .
+        run: python tests/test_cilium_helm_cli.py
+
       - name: Install Ansible collections
         run: ansible-galaxy collection install -r requirements.yml
 

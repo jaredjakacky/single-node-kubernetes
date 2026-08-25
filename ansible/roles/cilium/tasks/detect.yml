@@ -4,7 +4,6 @@
     argv:
       - "{{ cilium_helm_binary }}"
       - list
-      - --all
       - --namespace
       - "{{ cilium_release_namespace }}"
       - --filter
