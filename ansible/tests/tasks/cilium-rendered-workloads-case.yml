@@ -1,0 +1,42 @@
+---
+- name: Initialize the rendered workload validation result
+  ansible.builtin.set_fact:
+    cilium_test_workload_failed: false
+    cilium_test_workload_failure_message: ""
+
+- name: Evaluate the rendered workload install-path case
+  block:
+    - name: Invoke the production rendered workload assertions
+      ansible.builtin.include_role:
+        name: cilium
+        tasks_from: validate_rendered_workloads.yml
+      vars:
+        cilium_release_action: install
+        cilium_chart_template_output:
+          stdout: "{{ cilium_test_workload_case.rendered }}"
+  rescue:
+    - name: Record rejected rendered workloads
+      ansible.builtin.set_fact:
+        cilium_test_workload_failed: true
+        cilium_test_workload_failure_message: >-
+          {{ ansible_failed_result.msg | default('') }}
+
+- name: Require the expected rendered workload result
+  ansible.builtin.assert:
+    that:
+      - >-
+        cilium_test_workload_failed
+        == cilium_test_workload_case.should_fail
+      - >-
+        not cilium_test_workload_failed
+        or 'required Cilium agent and operator workloads'
+        in cilium_test_workload_failure_message
+      - >-
+        'Conditional expressions must be strings'
+        not in cilium_test_workload_failure_message
+      - >-
+        'Conditionals must have a boolean result'
+        not in cilium_test_workload_failure_message
+    fail_msg: >-
+      Case {{ cilium_test_workload_case.name }} produced an unexpected rendered
+      workload validation result: {{ cilium_test_workload_failure_message }}

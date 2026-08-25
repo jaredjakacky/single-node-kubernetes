@@ -1,0 +1,42 @@
+---
+- name: Initialize the chart metadata validation result
+  ansible.builtin.set_fact:
+    cilium_test_metadata_failed: false
+    cilium_test_metadata_failure_message: ""
+
+- name: Evaluate the chart metadata install-path case
+  block:
+    - name: Invoke the production chart metadata assertions
+      ansible.builtin.include_role:
+        name: cilium
+        tasks_from: validate_chart_metadata.yml
+      vars:
+        cilium_release_action: install
+        cilium_chart_version: 1.20.1
+        cilium_chart_metadata:
+          stdout: "{{ cilium_test_metadata_case.metadata }}"
+  rescue:
+    - name: Record rejected chart metadata
+      ansible.builtin.set_fact:
+        cilium_test_metadata_failed: true
+        cilium_test_metadata_failure_message: >-
+          {{ ansible_failed_result.msg | default('') }}
+
+- name: Require the expected chart metadata result
+  ansible.builtin.assert:
+    that:
+      - >-
+        cilium_test_metadata_failed
+        == cilium_test_metadata_case.should_fail
+      - >-
+        not cilium_test_metadata_failed
+        or 'immutable OCI digest' in cilium_test_metadata_failure_message
+      - >-
+        'Conditional expressions must be strings'
+        not in cilium_test_metadata_failure_message
+      - >-
+        'Conditionals must have a boolean result'
+        not in cilium_test_metadata_failure_message
+    fail_msg: >-
+      Case {{ cilium_test_metadata_case.name }} produced an unexpected chart
+      metadata validation result: {{ cilium_test_metadata_failure_message }}

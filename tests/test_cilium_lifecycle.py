@@ -460,6 +460,87 @@ def validate_helm_lifecycle_contract() -> None:
     )
 
 
+def validate_install_path_assertion_contract() -> None:
+    converge = (CILIUM_ROLE / "tasks" / "converge.yml").read_text(encoding="utf-8")
+    metadata_validation = load_yaml(
+        CILIUM_ROLE / "tasks" / "validate_chart_metadata.yml"
+    )
+    workload_validation = load_yaml(
+        CILIUM_ROLE / "tasks" / "validate_rendered_workloads.yml"
+    )
+    runtime_fixture = (ANSIBLE_ROOT / "tests" / "cilium-install-path.yml").read_text(
+        encoding="utf-8"
+    )
+    metadata_case = (
+        ANSIBLE_ROOT / "tests" / "tasks" / "cilium-chart-metadata-case.yml"
+    ).read_text(encoding="utf-8")
+    workload_case = (
+        ANSIBLE_ROOT / "tests" / "tasks" / "cilium-rendered-workloads-case.yml"
+    ).read_text(encoding="utf-8")
+    workflow = (
+        REPOSITORY_ROOT / ".github" / "workflows" / "ansible-ci.yaml"
+    ).read_text(encoding="utf-8")
+
+    require(
+        converge.index("show")
+        < converge.index("validate_chart_metadata.yml")
+        < converge.index("template")
+        < converge.index("validate_rendered_workloads.yml")
+        < converge.index("Install the pinned Cilium chart"),
+        "chart metadata and rendered workloads must be validated before install",
+    )
+    for validation in (metadata_validation, workload_validation):
+        require(
+            validation[0].get("when")
+            == "cilium_release_action in ['install', 'upgrade']",
+            "both shared production assertions must remain install/upgrade gated",
+        )
+    for case, shared_task in (
+        (metadata_case, "validate_chart_metadata.yml"),
+        (workload_case, "validate_rendered_workloads.yml"),
+    ):
+        require(
+            f"tasks_from: {shared_task}" in case
+            and "cilium_release_action: install" in case,
+            "runtime regressions must exercise each shared production assertion "
+            "through its install action gate",
+        )
+        require(
+            "Conditional expressions must be strings" in case
+            and "Conditionals must have a boolean result" in case,
+            "runtime regressions must distinguish assertions from parser/type errors",
+        )
+    for required_case in (
+        "exact pinned metadata",
+        "quoted pinned version metadata",
+        "wrong chart name",
+        "wrong chart version",
+        "wrong chart application version",
+        "mismatched chart metadata quotes",
+        "exact agent and operator workloads",
+        "missing Cilium agent workload",
+        "wrong Cilium agent workload name",
+        "missing Cilium operator workload",
+        "wrong Cilium operator workload name",
+    ):
+        require(
+            required_case in runtime_fixture, f"runtime case missing {required_case!r}"
+        )
+    require(
+        "python tests/test_ansible_conditionals.py" in workflow,
+        "CI must scan every Ansible conditional shape",
+    )
+    require(
+        "ansible-playbook tests/cilium-install-path.yml" in workflow,
+        "CI must execute the non-mutating install-path assertions",
+    )
+    require(
+        "ALLOW_BROKEN_CONDITIONALS\\(default\\) = False" in workflow
+        and "ANSIBLE_ALLOW_BROKEN_CONDITIONALS" not in workflow,
+        "CI must keep ansible-core broken-conditional compatibility disabled",
+    )
+
+
 def validate_runtime_proofs() -> None:
     validation = (CILIUM_ROLE / "tasks" / "validate.yml").read_text(encoding="utf-8")
     topology = (CILIUM_ROLE / "tasks" / "validate_topology.yml").read_text(
@@ -591,6 +672,7 @@ def main() -> None:
     validate_state_machine()
     validate_cni_package_baseline()
     validate_helm_lifecycle_contract()
+    validate_install_path_assertion_contract()
     validate_runtime_proofs()
     validate_topology_policy_separation()
     validate_destructive_safeguards()

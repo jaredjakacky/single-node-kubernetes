@@ -47,6 +47,10 @@ jobs:
         working-directory: .
         run: python tests/test_network_architecture.py
 
+      - name: Test Ansible conditional shapes
+        working-directory: .
+        run: python tests/test_ansible_conditionals.py
+
       - name: Test Cilium lifecycle contract
         working-directory: .
         run: python tests/test_cilium_lifecycle.py
@@ -61,6 +65,9 @@ jobs:
       - name: Verify Ansible runtime contract
         run: |
           config="$(ansible-config dump --only-changed)"
+          grep --extended-regexp --quiet \
+            '^ALLOW_BROKEN_CONDITIONALS\(default\) = False$' \
+            <<< "$(ansible-config dump)"
           grep --extended-regexp --quiet \
             '^INJECT_FACTS_AS_VARS\([^)]*ansible.cfg\) = False$' <<< "$config"
           grep --extended-regexp --quiet \
@@ -95,6 +102,9 @@ jobs:
 
       - name: Test Cilium inputs, values, and lifecycle state
         run: ansible-playbook tests/cilium-contract.yml
+
+      - name: Test non-mutating Cilium install-path assertions
+        run: ansible-playbook tests/cilium-install-path.yml
 
       - name: Test the real Kubernetes CNI package baseline
         run: |

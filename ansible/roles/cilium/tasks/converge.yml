@@ -12,27 +12,8 @@
   when: cilium_release_action in ['install', 'upgrade']
 
 - name: Validate the immutable Cilium chart identity
-  ansible.builtin.assert:
-    that:
-      - cilium_chart_metadata.stdout is search('(?m)^name: cilium$')
-      - >-
-        cilium_chart_metadata.stdout
-        is search(
-          '(?m)^version: [''\"]?'
-          ~ (cilium_chart_version | regex_escape)
-          ~ '[''\"]?$'
-        )
-      - >-
-        cilium_chart_metadata.stdout
-        is search(
-          '(?m)^appVersion: [''\"]?'
-          ~ (cilium_chart_version | regex_escape)
-          ~ '[''\"]?$'
-        )
-    fail_msg: >-
-      The immutable OCI digest did not resolve to the expected Cilium
-      {{ cilium_chart_version }} chart and application metadata.
-  when: cilium_release_action in ['install', 'upgrade']
+  ansible.builtin.import_tasks:
+    file: validate_chart_metadata.yml
 
 - name: Validate desired values against the pinned chart schema
   ansible.builtin.command:
@@ -52,19 +33,9 @@
   changed_when: false
   when: cilium_release_action in ['install', 'upgrade']
 
-- name: Require the expected pinned Cilium workloads to render
-  ansible.builtin.assert:
-    that:
-      - >-
-        cilium_chart_template_output.stdout
-        is search('(?m)^kind: DaemonSet\nmetadata:\n  name: cilium$')
-      - >-
-        cilium_chart_template_output.stdout
-        is search('(?m)^kind: Deployment\nmetadata:\n  name: cilium-operator$')
-    fail_msg: >-
-      The pinned chart and canonical values did not render the required Cilium
-      agent and operator workloads.
-  when: cilium_release_action in ['install', 'upgrade']
+- name: Validate the expected pinned Cilium workloads
+  ansible.builtin.import_tasks:
+    file: validate_rendered_workloads.yml
 
 - name: Install the pinned Cilium chart by immutable digest
   ansible.builtin.command:

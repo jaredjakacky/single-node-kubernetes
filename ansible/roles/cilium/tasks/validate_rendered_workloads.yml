@@ -1,0 +1,14 @@
+---
+- name: Require the expected pinned Cilium workloads to render
+  ansible.builtin.assert:
+    that:
+      - >-
+        cilium_chart_template_output.stdout
+        is search('(?m)^kind: DaemonSet\nmetadata:\n  name: cilium$')
+      - >-
+        cilium_chart_template_output.stdout
+        is search('(?m)^kind: Deployment\nmetadata:\n  name: cilium-operator$')
+    fail_msg: >-
+      The pinned chart and canonical values did not render the required Cilium
+      agent and operator workloads.
+  when: cilium_release_action in ['install', 'upgrade']

@@ -1,0 +1,114 @@
+---
+- name: Test the non-mutating Cilium install-path assertions
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Require the CI-pinned Ansible runtime
+      ansible.builtin.assert:
+        that:
+          - ansible_version.full == '2.21.3'
+        fail_msg: >-
+          The Cilium conditional regression must run with the repository's
+          pinned ansible-core 2.21.3 runtime.
+
+    - name: Exercise immutable Cilium chart metadata validation
+      ansible.builtin.include_tasks: tasks/cilium-chart-metadata-case.yml
+      loop:
+        - name: exact pinned metadata
+          metadata: |
+            name: cilium
+            version: 1.20.1
+            appVersion: 1.20.1
+          should_fail: false
+        - name: quoted pinned version metadata
+          metadata: |
+            name: cilium
+            version: "1.20.1"
+            appVersion: '1.20.1'
+          should_fail: false
+        - name: wrong chart name
+          metadata: |
+            name: not-cilium
+            version: 1.20.1
+            appVersion: 1.20.1
+          should_fail: true
+        - name: wrong chart version
+          metadata: |
+            name: cilium
+            version: 1.20.0
+            appVersion: 1.20.1
+          should_fail: true
+        - name: wrong chart application version
+          metadata: |
+            name: cilium
+            version: 1.20.1
+            appVersion: 1.20.0
+          should_fail: true
+        - name: mismatched chart metadata quotes
+          metadata: |
+            name: cilium
+            version: "1.20.1'
+            appVersion: 1.20.1
+          should_fail: true
+      loop_control:
+        loop_var: cilium_test_metadata_case
+        label: "{{ cilium_test_metadata_case.name }}"
+
+    - name: Exercise rendered Cilium workload validation
+      ansible.builtin.include_tasks: tasks/cilium-rendered-workloads-case.yml
+      loop:
+        - name: exact agent and operator workloads
+          rendered: |
+            ---
+            kind: DaemonSet
+            metadata:
+              name: cilium
+            ---
+            kind: Deployment
+            metadata:
+              name: cilium-operator
+          should_fail: false
+        - name: missing Cilium agent workload
+          rendered: |
+            ---
+            kind: Deployment
+            metadata:
+              name: cilium-operator
+          should_fail: true
+        - name: wrong Cilium agent workload name
+          rendered: |
+            ---
+            kind: DaemonSet
+            metadata:
+              name: not-cilium
+            ---
+            kind: Deployment
+            metadata:
+              name: cilium-operator
+          should_fail: true
+        - name: missing Cilium operator workload
+          rendered: |
+            ---
+            kind: DaemonSet
+            metadata:
+              name: cilium
+          should_fail: true
+        - name: wrong Cilium operator workload name
+          rendered: |
+            ---
+            kind: DaemonSet
+            metadata:
+              name: cilium
+            ---
+            kind: Deployment
+            metadata:
+              name: not-cilium-operator
+          should_fail: true
+      loop_control:
+        loop_var: cilium_test_workload_case
+        label: "{{ cilium_test_workload_case.name }}"
+
+- name: Exercise the real pinned Cilium chart regression
+  ansible.builtin.import_playbook: cilium-real-chart.yml
