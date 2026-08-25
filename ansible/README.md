@@ -174,6 +174,13 @@ completed, requires the local root-owned `0600`
 `kube-proxy` DaemonSet, and executes Helm and kubectl only on the control-plane
 node. The kubeconfig is never fetched to the Ansible controller.
 
+Phase 1 remains an intentionally single-node deployment. Preflight reads the
+live Kubernetes Node set and fails before Helm state management unless it
+contains exactly one Node. A second Node is not supported until the planned
+private-underlay and second-node migration implements and validates firewall,
+MTU, and cross-node behavior. This deployment-policy gate is separate from the
+generic health validator described below.
+
 The role installs official Helm `4.2.4` from `get.helm.sh` under a versioned
 `/usr/local/lib/helm` path after checking the pinned archive SHA-256. It installs
 Cilium chart `1.20.1` from the official
@@ -209,11 +216,16 @@ Cilium CRD together. The supported states are:
   cross-minor upgrades fail closed. The role does not adopt, uninstall, delete,
   reset, or reinitialize networking state.
 
-Every successful run proves more than Helm readiness. It requires one Ready
-Cilium agent, one healthy operator, healthy `cilium-dbg` Kubernetes/datapath/
-IPAM/controllers status, VXLAN routing, iptables IPv4 masquerading, Hubble
-disabled, `Node Ready=True`, and Ready CoreDNS Pods. It then creates an isolated
-temporary namespace with digest-pinned Kubernetes e2e images and proves:
+Every successful run proves more than Helm readiness. The topology-neutral
+health validator derives its expected count from the live Kubernetes Node set,
+requires every Node to have exactly one `Ready=True` condition, and requires
+the Cilium DaemonSet's desired, current, updated, Ready, and Available counts to
+match. It maps exactly one active agent to every Node and validates
+Kubernetes/datapath/IPAM/controllers, VXLAN, iptables masquerading, disabled
+Hubble, and `N/N` cluster reachability from every agent using `cilium-dbg`.
+The Phase-1 operator remains one healthy replica. Ready CoreDNS Pods are also
+required before the role creates an isolated temporary namespace with
+digest-pinned Kubernetes e2e images and proves:
 
 - a validation Pod receives an IPv4 address inside the configured Pod pool;
 

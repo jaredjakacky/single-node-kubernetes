@@ -102,87 +102,16 @@
     cilium_operator_status: >-
       {{ cilium_workload_status_output.results[1].stdout | from_json }}
 
-- name: Validate Cilium agent and operator readiness
+- name: Validate the configured Cilium operator policy and readiness
   ansible.builtin.assert:
     that:
-      - cilium_agent_status['status']['desiredNumberScheduled'] == 1
-      - cilium_agent_status['status']['numberReady'] == 1
-      - cilium_agent_status['status']['numberAvailable'] == 1
       - cilium_operator_status['spec']['replicas'] == 1
       - cilium_operator_status['status']['readyReplicas'] == 1
       - cilium_operator_status['status']['availableReplicas'] == 1
     fail_msg: >-
-      The single Cilium agent or the one-replica Cilium operator is not Ready
-      and Available.
+      The configured one-replica Cilium operator is not Ready and Available.
 
-- name: Select the Cilium agent Pod
-  ansible.builtin.command:
-    argv:
-      - /usr/bin/kubectl
-      - --kubeconfig
-      - "{{ cilium_kubeconfig_path }}"
-      - --namespace
-      - "{{ cilium_release_namespace }}"
-      - get
-      - pods
-      - --selector=k8s-app=cilium
-      - --output=jsonpath={.items[0].metadata.name}
-  register: cilium_agent_pod_name
-  changed_when: false
-
-- name: Require one selected Cilium agent Pod
-  ansible.builtin.assert:
-    that:
-      - cilium_agent_pod_name.stdout is match('^cilium-[a-z0-9-]+$')
-    fail_msg: No Cilium agent Pod could be selected for runtime status checks.
-
-- name: Read detailed Cilium runtime status
-  ansible.builtin.command:
-    argv:
-      - /usr/bin/kubectl
-      - --kubeconfig
-      - "{{ cilium_kubeconfig_path }}"
-      - --namespace
-      - "{{ cilium_release_namespace }}"
-      - exec
-      - "{{ cilium_agent_pod_name.stdout }}"
-      - --
-      - cilium-dbg
-      - status
-      - --verbose
-  register: cilium_runtime_status
-  changed_when: false
-
-- name: Validate Kubernetes, datapath, IPAM, and policy status
-  ansible.builtin.assert:
-    that:
-      - cilium_runtime_status.stdout is search('(?m)^Kubernetes:\s+Ok\b')
-      - cilium_runtime_status.stdout is search('(?m)^Cilium:\s+Ok\b')
-      - cilium_runtime_status.stdout is search('(?m)^IPAM:\s+IPv4:')
-      - >-
-        cilium_runtime_status.stdout
-        is search('(?m)^KubeProxyReplacement:\s+False\b')
-      - >-
-        cilium_runtime_status.stdout
-        is search('(?m)^Routing:\s+Network: Tunnel \[vxlan\]')
-      - >-
-        cilium_runtime_status.stdout
-        is search('(?m)^Masquerading:\s+IPTables \[IPv4: Enabled')
-      - >-
-        cilium_runtime_status.stdout
-        is search('(?m)^Controller Status:\s+[0-9]+/[0-9]+ healthy')
-      - cilium_runtime_status.stdout is search('(?m)^Hubble:\s+Disabled\b')
-      - >-
-        cilium_runtime_status.stdout
-        is search('(?m)^Cluster health:\s+1/1 reachable\b')
-    fail_msg: |-
-      cilium-dbg did not prove the expected healthy Kubernetes, datapath, IPAM,
-      policy-controller, cluster-health, retained-kube-proxy, iptables
-      masquerading, VXLAN, and disabled-Hubble state.
-
-      {{ cilium_runtime_status.stdout }}
-
-- name: Wait for Kubernetes Node readiness
+- name: Wait for every Kubernetes Node to be Ready
   ansible.builtin.command:
     argv:
       - /usr/bin/kubectl
@@ -211,33 +140,65 @@
   ansible.builtin.set_fact:
     cilium_nodes: "{{ (cilium_node_ready_output.stdout | from_json)['items'] }}"
 
-- name: Require exactly one Kubernetes Node
-  ansible.builtin.assert:
-    that:
-      - cilium_nodes | length == 1
-    fail_msg: >-
-      This lifecycle requires exactly one Kubernetes Node, found
-      {{ cilium_nodes | length }}.
+- name: Read active Cilium agent Pods
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - get
+      - pods
+      - --selector=k8s-app=cilium
+      - --output=json
+  register: cilium_agent_pods_output
+  changed_when: false
 
-- name: Normalize the Node Ready condition
+- name: Normalize active Cilium agent Pods
   ansible.builtin.set_fact:
-    cilium_node_ready_conditions: >-
+    cilium_agent_pods: >-
       {{
-        (
-          (cilium_node_ready_output.stdout | from_json)['items'][0]
-        )['status']['conditions']
-        | selectattr('type', 'equalto', 'Ready')
+        (cilium_agent_pods_output.stdout | from_json)['items']
+        | rejectattr('metadata.deletionTimestamp', 'defined')
+        | selectattr('status.phase', 'equalto', 'Running')
         | list
       }}
 
-- name: Require the single Node to be Ready
-  ansible.builtin.assert:
-    that:
-      - cilium_node_ready_conditions | length == 1
-      - cilium_node_ready_conditions[0]['status'] == 'True'
-    fail_msg: >-
-      Cilium deployment did not produce exactly one Node with Ready=True:
-      {{ cilium_nodes | to_nice_json }}
+- name: Select every active Cilium agent Pod
+  ansible.builtin.set_fact:
+    cilium_agent_pod_names: >-
+      {{ cilium_agent_pods | map(attribute='metadata.name') | sort | list }}
+
+- name: Read detailed runtime status from every Cilium agent
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - exec
+      - "{{ item }}"
+      - --
+      - cilium-dbg
+      - status
+      - --verbose
+  loop: "{{ cilium_agent_pod_names }}"
+  register: cilium_runtime_status_results
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item }}"
+
+- name: Validate topology-neutral Cilium and Kubernetes health
+  ansible.builtin.import_tasks: validate_topology.yml
+  vars:
+    cilium_topology_nodes: "{{ cilium_nodes }}"
+    cilium_topology_agent_status: "{{ cilium_agent_status }}"
+    cilium_topology_agent_pods: "{{ cilium_agent_pods }}"
+    cilium_topology_runtime_results: >-
+      {{ cilium_runtime_status_results.results }}
 
 - name: Wait for the CoreDNS Deployment rollout
   ansible.builtin.command:

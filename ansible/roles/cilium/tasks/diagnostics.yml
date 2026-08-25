@@ -1,4 +1,20 @@
 ---
+- name: Discover Cilium agents for diagnostics
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - get
+      - pods
+      - --selector=k8s-app=cilium
+      - --output=name
+  register: cilium_diagnostic_agent_pods
+  changed_when: false
+  failed_when: false
+
 - name: Collect Kubernetes lifecycle diagnostics
   ansible.builtin.command:
     argv: "{{ item }}"
@@ -45,21 +61,6 @@
       - --kubeconfig
       - "{{ cilium_kubeconfig_path }}"
       - --namespace
-      - "{{ cilium_release_namespace }}"
-      - exec
-      - >-
-        {{
-          (cilium_agent_pod_name | default({'stdout': ''})).stdout
-          | default('cilium-diagnostics-unavailable', true)
-        }}
-      - --
-      - cilium-dbg
-      - status
-      - --verbose
-    - - /usr/bin/kubectl
-      - --kubeconfig
-      - "{{ cilium_kubeconfig_path }}"
-      - --namespace
       - "{{ cilium_validation_namespace }}"
       - get
       - all,networkpolicy
@@ -67,6 +68,27 @@
   register: cilium_diagnostic_commands
   changed_when: false
   failed_when: false
+
+- name: Collect every Cilium agent runtime diagnostic
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - --namespace
+      - "{{ cilium_release_namespace }}"
+      - exec
+      - "{{ item | regex_replace('^pod/', '') }}"
+      - --
+      - cilium-dbg
+      - status
+      - --verbose
+  loop: "{{ cilium_diagnostic_agent_pods.stdout_lines | default([]) }}"
+  register: cilium_agent_diagnostic_commands
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item }}"
 
 - name: Emit Cilium lifecycle diagnostics
   ansible.builtin.debug:
@@ -80,3 +102,16 @@
   loop: "{{ cilium_diagnostic_commands.results }}"
   loop_control:
     label: "{{ item.cmd[0] }}"
+
+- name: Emit every Cilium agent runtime diagnostic
+  ansible.builtin.debug:
+    msg: |-
+      Command: {{ item.cmd | join(' ') }}
+      rc: {{ item.rc }}
+      stdout:
+      {{ item.stdout | default('', true) }}
+      stderr:
+      {{ item.stderr | default('', true) }}
+  loop: "{{ cilium_agent_diagnostic_commands.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default(item.cmd[0]) }}"

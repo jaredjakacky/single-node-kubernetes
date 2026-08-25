@@ -153,6 +153,10 @@ def validate_state_machine() -> None:
 
 def validate_runtime_proofs() -> None:
     validation = (CILIUM_ROLE / "tasks" / "validate.yml").read_text(encoding="utf-8")
+    topology = (CILIUM_ROLE / "tasks" / "validate_topology.yml").read_text(
+        encoding="utf-8"
+    )
+    validation_contract = validation + topology
     manifest = (CILIUM_ROLE / "templates" / "validation-resources.yml.j2").read_text(
         encoding="utf-8"
     )
@@ -170,7 +174,7 @@ def validate_runtime_proofs() -> None:
         "NetworkPolicy-denied path",
     )
     for proof in required_proofs:
-        require(proof in validation, f"runtime proof missing {proof!r}")
+        require(proof in validation_contract, f"runtime proof missing {proof!r}")
     require("kind: NetworkPolicy" in manifest, "NetworkPolicy fixture missing")
     require("cilium-validation-access: allowed" in manifest, "allow label missing")
     require("cilium-validation-access: denied" in manifest, "deny label missing")
@@ -178,6 +182,81 @@ def validate_runtime_proofs() -> None:
         "cilium_validation_namespace_created"
         in (CILIUM_ROLE / "tasks" / "cleanup.yml").read_text(encoding="utf-8"),
         "cleanup must be limited to lifecycle-owned resources",
+    )
+
+
+def validate_topology_policy_separation() -> None:
+    lifecycle = (CILIUM_ROLE / "tasks" / "lifecycle.yml").read_text(encoding="utf-8")
+    preflight = (CILIUM_ROLE / "tasks" / "preflight.yml").read_text(encoding="utf-8")
+    policy = (CILIUM_ROLE / "tasks" / "enforce_phase_one_policy.yml").read_text(
+        encoding="utf-8"
+    )
+    validation = (CILIUM_ROLE / "tasks" / "validate.yml").read_text(encoding="utf-8")
+    topology = (CILIUM_ROLE / "tasks" / "validate_topology.yml").read_text(
+        encoding="utf-8"
+    )
+    fixture = (ANSIBLE_ROOT / "tests" / "cilium-contract.yml").read_text(
+        encoding="utf-8"
+    )
+
+    require(
+        "enforce_phase_one_policy.yml" in preflight,
+        "preflight must invoke the explicit Phase-1 topology policy",
+    )
+    require(
+        lifecycle.index("preflight.yml")
+        < lifecycle.index("install_helm.yml")
+        < lifecycle.index("converge.yml"),
+        "the Phase-1 guard must execute before Helm installation or mutation",
+    )
+    require(
+        "cilium_phase_one_nodes | length == 1" in policy,
+        "Phase 1 must still reject a real multi-node lifecycle",
+    )
+    require(
+        "private-underlay and second-node" in policy,
+        "Phase-1 rejection must explain the planned migration boundary",
+    )
+    for health_field in (
+        "desiredNumberScheduled",
+        "currentNumberScheduled",
+        "updatedNumberScheduled",
+        "numberReady",
+        "numberAvailable",
+    ):
+        require(
+            health_field in topology,
+            f"topology validator is missing DaemonSet field {health_field!r}",
+        )
+    for forbidden in (
+        "desiredNumberScheduled'] == 1",
+        "currentNumberScheduled'] == 1",
+        "updatedNumberScheduled'] == 1",
+        "numberReady'] == 1",
+        "numberAvailable'] == 1",
+        "cilium_topology_nodes | length == 1",
+        "['items'][0]",
+        "Cluster health:\\s+1/1 reachable",
+    ):
+        require(
+            forbidden not in validation + topology,
+            f"generic health validation contains topology literal {forbidden!r}",
+        )
+    require(
+        topology.count("== cilium_expected_node_count") >= 8,
+        "generic health must derive Node, agent, and runtime expectations",
+    )
+    require(
+        'loop: "{{ cilium_agent_pod_names }}"' in validation,
+        "runtime status must be collected from every active Cilium agent",
+    )
+    require(
+        "healthy two-node topology is accepted by generic validation" in fixture,
+        "the independent synthetic two-node health fixture is missing",
+    )
+    require(
+        "two Kubernetes Nodes remain unsupported in Phase 1" in fixture,
+        "the independent Phase-1 multi-node rejection fixture is missing",
     )
 
 
@@ -202,6 +281,7 @@ def main() -> None:
     validate_pins()
     validate_state_machine()
     validate_runtime_proofs()
+    validate_topology_policy_separation()
     validate_destructive_safeguards()
     print(
         "Cilium lifecycle contract passed: separation, immutable pins, "

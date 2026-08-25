@@ -47,6 +47,45 @@
         loop_var: cilium_test_input_case
         label: "{{ cilium_test_input_case.name }}"
 
+    - name: Exercise the Phase-1 deployment policy independently
+      ansible.builtin.include_tasks: tasks/cilium-policy-case.yml
+      loop:
+        - name: one Kubernetes Node is supported in Phase 1
+          nodes:
+            - metadata:
+                name: node-a
+          should_fail: false
+        - name: two Kubernetes Nodes remain unsupported in Phase 1
+          nodes:
+            - metadata:
+                name: node-a
+            - metadata:
+                name: node-b
+          should_fail: true
+      loop_control:
+        loop_var: cilium_test_policy_case
+        label: "{{ cilium_test_policy_case.name }}"
+
+    - name: Exercise topology-neutral Cilium health independently
+      ansible.builtin.include_tasks: tasks/cilium-topology-case.yml
+      loop:
+        - name: healthy two-node topology is accepted by generic validation
+          should_fail: false
+        - name: a non-Ready Node is rejected
+          second_node_ready: "False"
+          should_fail: true
+        - name: mismatched Cilium agent readiness is rejected
+          agent_ready: 1
+          agent_available: 1
+          agent_unavailable: 1
+          should_fail: true
+        - name: incomplete Cilium cluster reachability is rejected
+          second_agent_cluster_health: 1/2
+          should_fail: true
+      loop_control:
+        loop_var: cilium_test_topology_case
+        label: "{{ cilium_test_topology_case.name }}"
+
     - name: Create an isolated rendered-values directory
       ansible.builtin.tempfile:
         state: directory

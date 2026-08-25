@@ -58,6 +58,24 @@
       Cilium may be deployed only against the repository's Kubernetes 1.36
       lifecycle.
 
+- name: Read Kubernetes Nodes for the Phase-1 policy gate
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - --kubeconfig
+      - "{{ cilium_kubeconfig_path }}"
+      - get
+      - nodes
+      - --output=json
+  register: cilium_phase_one_nodes_output
+  changed_when: false
+
+- name: Enforce the Phase-1 deployment topology
+  ansible.builtin.import_tasks: enforce_phase_one_policy.yml
+  vars:
+    cilium_phase_one_nodes: >-
+      {{ (cilium_phase_one_nodes_output.stdout | from_json)['items'] }}
+
 - name: Require the retained kube-proxy DaemonSet
   ansible.builtin.command:
     argv:

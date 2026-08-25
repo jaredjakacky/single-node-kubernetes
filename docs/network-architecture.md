@@ -111,6 +111,16 @@ transparent encryption, Gateway API, Cilium Ingress, the BGP control plane,
 ClusterMesh, kube-proxy replacement, and BIG TCP disabled. These are sequenced
 improvements, not permanent rejections.
 
+Phase 1 also has an explicit fail-closed deployment policy requiring exactly
+one live Kubernetes Node. A real second-node deployment remains unsupported
+until the private-underlay migration covers node reachability, firewall rules,
+VXLAN MTU, and cross-node validation. That temporary policy is deliberately
+separate from Cilium health semantics: the reusable validator derives `N` from
+the Kubernetes Node set, validates every Node and agent, compares DaemonSet
+health with `N`, and requires `N/N` cluster reachability from every agent. The
+validator can therefore express a healthy future topology without authorizing
+the current lifecycle to deploy it.
+
 Hubble is deferred until the second Kubernetes node. At that point,
 cluster-wide flow visibility becomes materially useful for proving and
 troubleshooting cross-node traffic. WireGuard is a likely hardening step after
