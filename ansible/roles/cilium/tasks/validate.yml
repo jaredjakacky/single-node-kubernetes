@@ -277,7 +277,7 @@
       - "{{ cilium_validation_namespace }}"
       - apply
       - --filename
-      - -
+      - "-"
     stdin: "{{ lookup('ansible.builtin.template', 'validation-resources.yml.j2') }}"
   changed_when: false
 

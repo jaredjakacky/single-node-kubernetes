@@ -1,0 +1,183 @@
+---
+- name: Test the Cilium validation manifest contract
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Require the CI-pinned Ansible runtime
+      ansible.builtin.assert:
+        that:
+          - ansible_version.full == '2.21.3'
+        fail_msg: >-
+          The Cilium validation manifest contract must run with the
+          repository's pinned ansible-core 2.21.3 runtime.
+
+    - name: Load the immutable Cilium implementation values
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/cilium/vars/main.yml"
+
+    - name: Require the validation image to remain digest pinned
+      ansible.builtin.assert:
+        that:
+          - >-
+            cilium_validation_image
+            is match('^registry\.k8s\.io/.+@sha256:[0-9a-f]{64}$')
+        fail_msg: The Cilium validation image must remain immutable.
+
+    - name: Render the production Cilium validation manifest
+      ansible.builtin.set_fact:
+        cilium_validation_rendered_manifest: >-
+          {{
+            lookup(
+              'ansible.builtin.template',
+              playbook_dir ~ '/../roles/cilium/templates/validation-resources.yml.j2'
+            )
+          }}
+
+    - name: Require a non-empty rendered validation manifest
+      ansible.builtin.assert:
+        that:
+          - cilium_validation_rendered_manifest | trim | length > 0
+
+    - name: Parse every rendered validation document
+      ansible.builtin.set_fact:
+        cilium_validation_objects: >-
+          {{ cilium_validation_rendered_manifest | from_yaml_all | list }}
+
+    - name: Require every rendered document to be a non-empty mapping
+      ansible.builtin.assert:
+        that:
+          - item is mapping
+          - item | length > 0
+      loop: "{{ cilium_validation_objects }}"
+      loop_control:
+        label: "{{ item.kind | default('null document') }}"
+
+    - name: Require the exact validation object boundary
+      ansible.builtin.assert:
+        that:
+          - cilium_validation_objects | length == 5
+          - >-
+            cilium_validation_objects | map(attribute='apiVersion') | list
+            == ['v1', 'v1', 'v1', 'v1', 'networking.k8s.io/v1']
+          - >-
+            cilium_validation_objects | map(attribute='kind') | list
+            == ['Pod', 'Pod', 'Pod', 'Service', 'NetworkPolicy']
+          - >-
+            cilium_validation_objects
+            | map(attribute='metadata.name')
+            | list
+            == [
+              'cilium-validation-server',
+              'cilium-validation-client-allowed',
+              'cilium-validation-client-denied',
+              'cilium-validation-server',
+              'cilium-validation-server-ingress'
+            ]
+        fail_msg: >-
+          The production template introduced a missing, reordered, or
+          unexpected validation object.
+
+    - name: Select the rendered validation objects
+      ansible.builtin.set_fact:
+        cilium_validation_server_pod: "{{ cilium_validation_objects[0] }}"
+        cilium_validation_allowed_pod: "{{ cilium_validation_objects[1] }}"
+        cilium_validation_denied_pod: "{{ cilium_validation_objects[2] }}"
+        cilium_validation_service: "{{ cilium_validation_objects[3] }}"
+        cilium_validation_policy: "{{ cilium_validation_objects[4] }}"
+
+    - name: Require every validation Pod to use the hardened pinned container
+      ansible.builtin.assert:
+        that:
+          - item['spec']['containers'] | length == 1
+          - item['spec']['containers'][0]['image'] == cilium_validation_image
+          - >-
+            item['spec']['containers'][0]['securityContext']
+            ['allowPrivilegeEscalation'] is sameas false
+          - >-
+            'privileged'
+            not in item['spec']['containers'][0]['securityContext']
+          - >-
+            item['spec']['containers'][0]['securityContext']['capabilities']['drop']
+            == ['ALL']
+          - >-
+            item['spec']['containers'][0]['securityContext']
+            ['readOnlyRootFilesystem'] is sameas true
+          - >-
+            item['spec']['containers'][0]['securityContext']['runAsNonRoot']
+            is sameas true
+          - >-
+            item['spec']['containers'][0]['securityContext']['runAsUser'] == 65532
+          - >-
+            item['spec']['containers'][0]['securityContext']
+            ['seccompProfile']['type'] == 'RuntimeDefault'
+      loop: "{{ cilium_validation_objects[:3] }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+
+    - name: Require the validation server to listen on TCP 8080
+      ansible.builtin.assert:
+        that:
+          - >-
+            cilium_validation_server_pod['spec']['containers'][0]['command']
+            == ['/agnhost', 'netexec', '--http-port=8080']
+          - >-
+            cilium_validation_server_pod['spec']['containers'][0]['ports']
+            | length == 1
+          - >-
+            cilium_validation_server_pod['spec']['containers'][0]
+            ['ports'][0]['containerPort'] == 8080
+          - >-
+            cilium_validation_server_pod['spec']['containers'][0]
+            ['ports'][0]['protocol'] == 'TCP'
+
+    - name: Require exact allowed and denied client identities
+      ansible.builtin.assert:
+        that:
+          - >-
+            cilium_validation_allowed_pod['metadata']['labels']
+            ['cilium-validation-access'] == 'allowed'
+          - >-
+            cilium_validation_denied_pod['metadata']['labels']
+            ['cilium-validation-access'] == 'denied'
+
+    - name: Require the exact validation Service contract
+      ansible.builtin.assert:
+        that:
+          - >-
+            cilium_validation_service['spec']['selector']
+            == {
+              'app.kubernetes.io/name': 'cilium-validation-server'
+            }
+          - cilium_validation_service['spec']['ports'] | length == 1
+          - cilium_validation_service['spec']['ports'][0]['port'] == 8080
+          - cilium_validation_service['spec']['ports'][0]['protocol'] == 'TCP'
+          - cilium_validation_service['spec']['ports'][0]['targetPort'] == 'http'
+
+    - name: Require the exact validation NetworkPolicy contract
+      ansible.builtin.assert:
+        that:
+          - >-
+            cilium_validation_policy['spec']
+            == {
+              'podSelector': {
+                'matchLabels': {
+                  'app.kubernetes.io/name': 'cilium-validation-server'
+                }
+              },
+              'policyTypes': ['Ingress'],
+              'ingress': [{
+                'from': [{
+                  'podSelector': {
+                    'matchLabels': {
+                      'cilium-validation-access': 'allowed'
+                    }
+                  }
+                }],
+                'ports': [{
+                  'port': 8080,
+                  'protocol': 'TCP'
+                }]
+              }]
+            }

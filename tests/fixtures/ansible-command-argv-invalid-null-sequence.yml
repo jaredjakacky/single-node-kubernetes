@@ -1,0 +1,8 @@
+---
+- name: Apply a manifest with a malformed stdin filename
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - apply
+      - --filename
+      - -
