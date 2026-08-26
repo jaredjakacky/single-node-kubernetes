@@ -25,10 +25,12 @@ cilium_kubernetes_cni_keep_path: /etc/cni/net.d/.kubernetes-cni-keep
 cilium_kubernetes_cni_package: kubernetes-cni
 cilium_dpkg_query_binary: /usr/bin/dpkg-query
 
-# Kubernetes v1.36.4's own e2e image pin. The multi-architecture manifest
-# digest prevents a mutable tag from changing the validation workload.
+# Kubernetes v1.36.4's own e2e image pin. Keep the readable tag with the
+# multi-architecture manifest digest so Renovate can propose reviewed updates
+# without sacrificing immutable execution.
+# renovate: datasource=docker depName=registry.k8s.io/e2e-test-images/agnhost versioning=docker
 cilium_validation_image: >-
-  registry.k8s.io/e2e-test-images/agnhost@sha256:a62f40481e05709988fe44e5035b2e0f553cd52bf0ae4e83614928255b00e8c1
+  registry.k8s.io/e2e-test-images/agnhost:2.63.0@sha256:a62f40481e05709988fe44e5035b2e0f553cd52bf0ae4e83614928255b00e8c1
 cilium_validation_egress_endpoint: registry.k8s.io:443
 
 cilium_helm_environment:

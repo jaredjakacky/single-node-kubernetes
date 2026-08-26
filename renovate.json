@@ -41,6 +41,29 @@
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) versioning=(?<versioning>\\S+)\\ncilium_supported_chart_version: \"(?<currentValue>[^\"]+)\"\\ncilium_chart_oci_repository: oci://(?<depName>\\S+)\\ncilium_chart_digest: >-\\n  (?<currentDigest>sha256:[0-9a-f]{64})"
       ]
+    },
+    {
+      "customType": "regex",
+      "description": "Track the upstream CNI plugins version embedded in the Debian package fixture",
+      "managerFilePatterns": [
+        "/^\\.github\\/workflows\\/ansible-ci\\.yaml$/"
+      ],
+      "matchStrings": [
+        "package_version=\"(?<currentValue>\\d+\\.\\d+\\.\\d+)-[^\"\\s]+\""
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "containernetworking/plugins",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the tag and digest for the Kubernetes agnhost validation image",
+      "managerFilePatterns": [
+        "/^ansible\\/roles\\/cilium\\/vars\\/main\\.yml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+) versioning=(?<versioning>\\S+)\\ncilium_validation_image: >-\\n  \\S+:(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[0-9a-f]{64})"
+      ]
     }
   ],
   "packageRules": [
@@ -77,6 +100,26 @@
       "matchPackageNames": ["quay.io/cilium/charts/cilium"],
       "allowedVersions": "/^v?1\\.20\\./",
       "ignoreUnstable": true
+    },
+    {
+      "description": "Keep CNI plugins aligned with Kubernetes 1.36's package baseline",
+      "matchDatasources": ["github-releases"],
+      "matchPackageNames": ["containernetworking/plugins"],
+      "allowedVersions": "/^v?1\\.9\\./",
+      "ignoreUnstable": true,
+      "prBodyNotes": [
+        "The Debian package revision and SHA-256 in `.github/workflows/ansible-ci.yaml` are manual review gates. Update both from `pkgs.k8s.io` before merging."
+      ]
+    },
+    {
+      "description": "Keep agnhost aligned with Kubernetes 1.36's e2e dependency",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["registry.k8s.io/e2e-test-images/agnhost"],
+      "allowedVersions": "/^2\\.63\\./",
+      "ignoreUnstable": true,
+      "prBodyNotes": [
+        "Verify the proposed tag against Kubernetes 1.36's `build/dependencies.yaml` before merging."
+      ]
     }
   ]
 }
