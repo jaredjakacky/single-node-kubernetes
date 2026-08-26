@@ -51,6 +51,10 @@ jobs:
         working-directory: .
         run: python tests/test_ansible_conditionals.py
 
+      - name: Test structured Ansible command arguments
+        working-directory: .
+        run: python tests/test_ansible_command_argv.py
+
       - name: Test Cilium lifecycle contract
         working-directory: .
         run: python tests/test_cilium_lifecycle.py
@@ -102,6 +106,9 @@ jobs:
 
       - name: Test Cilium inputs, values, and lifecycle state
         run: ansible-playbook tests/cilium-contract.yml
+
+      - name: Test the Cilium validation manifest
+        run: ansible-playbook tests/cilium-validation-manifest.yml
 
       - name: Test non-mutating Cilium install-path assertions
         run: ansible-playbook tests/cilium-install-path.yml

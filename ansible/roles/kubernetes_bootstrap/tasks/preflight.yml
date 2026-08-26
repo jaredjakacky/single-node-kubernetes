@@ -111,7 +111,7 @@
   ansible.builtin.command:
     argv:
       - /usr/bin/ip
-      - -4
+      - "-4"
       - -o
       - route
       - show

@@ -1,0 +1,8 @@
+---
+- name: Apply a manifest through stdin
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/kubectl
+      - apply
+      - --filename
+      - "-"

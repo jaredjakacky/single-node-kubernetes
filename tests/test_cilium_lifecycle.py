@@ -542,7 +542,9 @@ def validate_install_path_assertion_contract() -> None:
 
 
 def validate_runtime_proofs() -> None:
-    validation = (CILIUM_ROLE / "tasks" / "validate.yml").read_text(encoding="utf-8")
+    validation_path = CILIUM_ROLE / "tasks" / "validate.yml"
+    validation_tasks = load_yaml(validation_path)
+    validation = validation_path.read_text(encoding="utf-8")
     topology = (CILIUM_ROLE / "tasks" / "validate_topology.yml").read_text(
         encoding="utf-8"
     )
@@ -572,6 +574,97 @@ def validate_runtime_proofs() -> None:
         "cilium_validation_namespace_created"
         in (CILIUM_ROLE / "tasks" / "cleanup.yml").read_text(encoding="utf-8"),
         "cleanup must be limited to lifecycle-owned resources",
+    )
+
+    task_by_name = {task["name"]: task for task in validation_tasks}
+    apply_task = task_by_name["Apply purpose-built validation workloads"]
+    apply_command = apply_task["ansible.builtin.command"]
+    require(
+        apply_command["argv"]
+        == [
+            "/usr/bin/kubectl",
+            "--kubeconfig",
+            "{{ cilium_kubeconfig_path }}",
+            "--namespace",
+            "{{ cilium_validation_namespace }}",
+            "apply",
+            "--filename",
+            "-",
+        ],
+        "validation resources must be applied through kubectl stdin exactly",
+    )
+    require(
+        isinstance(apply_command["argv"][-1], str) and apply_command["argv"][-1] == "-",
+        "the kubectl stdin filename token must be the literal string '-'",
+    )
+    require(
+        apply_command["stdin"]
+        == "{{ lookup('ansible.builtin.template', 'validation-resources.yml.j2') }}",
+        "the production validation manifest must be streamed from its template",
+    )
+    require(
+        apply_task["changed_when"] is False,
+        "temporary validation resource application must remain idempotence-neutral",
+    )
+
+    ordered_smoke_tasks = (
+        "Validate the exact deployed Helm state",
+        "Wait for the Cilium agent rollout",
+        "Wait for the Cilium operator rollout",
+        "Wait for every Kubernetes Node to be Ready",
+        "Read detailed runtime status from every Cilium agent",
+        "Wait for the CoreDNS Deployment rollout",
+        "Require every CoreDNS Pod to be Ready",
+        "Check for a pre-existing validation namespace",
+        "Create the temporary validation namespace",
+        "Apply purpose-built validation workloads",
+        "Wait for every validation Pod to be Ready",
+        "Validate temporary Pod and Service IPv4 addresses",
+        "Prove allowed Pod-to-Pod connectivity",
+        "Prove allowed Pod-to-ClusterIP connectivity",
+        "Prove cluster DNS resolution and Service connectivity",
+        "Prove bounded Pod Internet egress",
+        "Probe the NetworkPolicy-denied path",
+        "Require NetworkPolicy to deny the disallowed Pod",
+    )
+    validation_task_names = [task["name"] for task in validation_tasks]
+    require(
+        [validation_task_names.index(name) for name in ordered_smoke_tasks]
+        == sorted(validation_task_names.index(name) for name in ordered_smoke_tasks),
+        "the full Cilium health and network smoke-test sequence must remain ordered",
+    )
+    for task in validation_tasks:
+        if "ansible.builtin.command" in task:
+            require(
+                task.get("changed_when") is False,
+                f"validation command {task['name']!r} must not report changed state",
+            )
+
+    cleanup = load_yaml(CILIUM_ROLE / "tasks" / "cleanup.yml")
+    cleanup_task = cleanup[0]
+    require(
+        cleanup_task["name"] == "Delete the lifecycle-owned validation namespace"
+        and cleanup_task["changed_when"] is False
+        and "cilium_validation_namespace_created" in cleanup_task["when"],
+        "temporary cleanup must remain ownership-gated and idempotence-neutral",
+    )
+    lifecycle_main = (CILIUM_ROLE / "tasks" / "main.yml").read_text(encoding="utf-8")
+    require(
+        lifecycle_main.index("cleanup.yml")
+        < lifecycle_main.index("Release the Cilium lifecycle lock"),
+        "validation cleanup must run before lifecycle lock release",
+    )
+
+    workflow = (
+        REPOSITORY_ROOT / ".github" / "workflows" / "ansible-ci.yaml"
+    ).read_text(encoding="utf-8")
+    require(
+        "python tests/test_ansible_command_argv.py" in workflow,
+        "CI must scan every structured Ansible command argv",
+    )
+    require(
+        "ansible-playbook tests/cilium-validation-manifest.yml" in workflow,
+        "CI must render and parse the production validation manifest",
     )
 
 
