@@ -1,13 +1,15 @@
 variable "deployment" {
   description = "Non-secret deployment identity and Hetzner placement supplied by the private deployment repository."
   type = object({
-    environment     = string
-    system          = string
-    server_name     = string
-    primary_ip_name = string
-    location        = string
-    server_type     = string
-    ssh_key_name    = string
+    environment        = string
+    system_name        = string
+    server_name        = string
+    primary_ipv4_name  = string
+    ssh_key_name       = string
+    location           = string
+    server_type        = string
+    image_name         = string
+    image_architecture = string
   })
   nullable = false
 
@@ -15,12 +17,14 @@ variable "deployment" {
     condition = alltrue([
       for value in [
         var.deployment.environment,
-        var.deployment.system,
+        var.deployment.system_name,
         var.deployment.server_name,
-        var.deployment.primary_ip_name,
+        var.deployment.primary_ipv4_name,
+        var.deployment.ssh_key_name,
         var.deployment.location,
         var.deployment.server_type,
-        var.deployment.ssh_key_name,
+        var.deployment.image_name,
+        var.deployment.image_architecture,
       ] : length(trimspace(value)) > 0
     ])
     error_message = "deployment values must be non-empty strings."
@@ -28,15 +32,19 @@ variable "deployment" {
 
   validation {
     condition = alltrue([
-      can(regex("^[a-z0-9][a-z0-9-]{0,62}$", var.deployment.environment)),
-      can(regex("^[a-z0-9][a-z0-9-]{0,62}$", var.deployment.system)),
-      can(regex("^[a-z0-9][a-z0-9-]{0,62}$", var.deployment.server_name)),
-      can(regex("^[a-z0-9][a-z0-9-]{0,62}$", var.deployment.primary_ip_name)),
-      can(regex("^[a-z0-9][a-z0-9-]{0,62}$", var.deployment.location)),
-      can(regex("^[a-z0-9][a-z0-9-]{0,62}$", var.deployment.server_type)),
-      can(regex("^[a-z0-9][a-z0-9-]{0,62}$", var.deployment.ssh_key_name)),
+      for value in [
+        var.deployment.environment,
+        var.deployment.system_name,
+        var.deployment.server_name,
+        var.deployment.primary_ipv4_name,
+        var.deployment.ssh_key_name,
+        var.deployment.location,
+        var.deployment.server_type,
+        var.deployment.image_name,
+        var.deployment.image_architecture,
+      ] : can(regex("^[a-z0-9][a-z0-9.-]{0,62}$", value))
     ])
-    error_message = "deployment values must use lowercase letters, numbers, and internal hyphens only."
+    error_message = "deployment values must use lowercase letters, numbers, dots, and internal hyphens only."
   }
 }
 
@@ -46,14 +54,11 @@ variable "admin_ssh_public_key" {
   nullable    = false
 
   validation {
-    condition = (
-      var.admin_ssh_public_key == trimspace(var.admin_ssh_public_key) &&
-      can(regex(
-        "^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [^\\r\\n]+)?$",
-        var.admin_ssh_public_key,
-      ))
-    )
-    error_message = "admin_ssh_public_key must be one trimmed OpenSSH Ed25519 public key."
+    condition = can(regex(
+      "^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [^\\r\\n]+)?$",
+      trimspace(var.admin_ssh_public_key),
+    ))
+    error_message = "admin_ssh_public_key must contain one OpenSSH Ed25519 public key."
   }
 }
 
@@ -68,7 +73,7 @@ variable "ssh_source_cidrs" {
       length(distinct(var.ssh_source_cidrs)) == length(var.ssh_source_cidrs) &&
       alltrue([
         for cidr in var.ssh_source_cidrs : try(
-          !strcontains(cidr, ":") &&
+          length(regexall(":", cidr)) == 0 &&
           tonumber(split("/", cidr)[1]) == 32 &&
           cidrhost(cidr, 0) == split("/", cidr)[0],
           false,

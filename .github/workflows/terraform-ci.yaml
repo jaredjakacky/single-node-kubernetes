@@ -11,10 +11,18 @@ on:
 permissions:
   contents: read
 
+env:
+  # The root module intentionally leaves its cloud block deployment-neutral.
+  # These non-routable CI identities satisfy static initialization only because
+  # this workflow disables backend access.
+  TF_CLOUD_ORGANIZATION: ci-validation
+  TF_WORKSPACE: ci-validation
+
 jobs:
   validate:
     name: Validate Terraform
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
 
     defaults:
       run:

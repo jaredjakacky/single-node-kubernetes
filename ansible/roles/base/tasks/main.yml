@@ -25,6 +25,119 @@
       The base role requires systemd. Detected
       {{ ansible_facts.service_mgr }}.
 
+- name: Inspect the OpenSSH daemon
+  ansible.builtin.stat:
+    path: /usr/sbin/sshd
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
+  register: base_sshd_binary
+
+- name: Require the OpenSSH daemon
+  ansible.builtin.assert:
+    that:
+      - base_sshd_binary.stat.exists
+      - base_sshd_binary.stat.isreg | default(false)
+      - base_sshd_binary.stat.executable | default(false)
+    fail_msg: >-
+      The base role requires the OpenSSH daemon at /usr/sbin/sshd so it can
+      enforce key-only administrative access.
+
+- name: Create the OpenSSH configuration directory
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# This project still uses root for production automation. The role therefore
+# retains root SSH, but only through a pre-provisioned public key. The 00 prefix
+# makes these first-value-wins directives precede cloud-image drop-ins.
+- name: Harden OpenSSH authentication and forwarding
+  ansible.builtin.copy:
+    content: |-
+      # Managed by the single-node-kubernetes base role.
+      PermitRootLogin prohibit-password
+      AuthenticationMethods publickey
+      PubkeyAuthentication yes
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      HostbasedAuthentication no
+      GSSAPIAuthentication no
+      PermitEmptyPasswords no
+      PermitUserEnvironment no
+      PermitUserRC no
+      MaxAuthTries 3
+      LoginGraceTime 30
+      AllowAgentForwarding no
+      AllowTcpForwarding local
+      AllowStreamLocalForwarding local
+      GatewayPorts no
+      PermitTunnel no
+      X11Forwarding no
+      ClientAliveInterval 300
+      ClientAliveCountMax 2
+      LogLevel VERBOSE
+    dest: /etc/ssh/sshd_config.d/00-single-node-kubernetes.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Validate and reload OpenSSH
+
+- name: Read the effective OpenSSH policy
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sshd
+      - -T
+      - -C
+      - user=root,host=localhost,addr=127.0.0.1
+  register: base_sshd_effective_policy
+  changed_when: false
+
+- name: Require the effective OpenSSH policy
+  ansible.builtin.assert:
+    that:
+      - item in base_sshd_effective_policy.stdout_lines
+    fail_msg: >-
+      The effective OpenSSH configuration did not contain the required
+      directive {{ item }}. Check the main sshd_config Include order and any
+      conflicting earlier directives before reloading the daemon.
+  loop:
+    - authenticationmethods publickey
+    - pubkeyauthentication yes
+    - passwordauthentication no
+    - kbdinteractiveauthentication no
+    - hostbasedauthentication no
+    - gssapiauthentication no
+    - permitemptypasswords no
+    - permituserenvironment no
+    - permituserrc no
+    - maxauthtries 3
+    - logingracetime 30
+    - allowagentforwarding no
+    - allowtcpforwarding local
+    - allowstreamlocalforwarding local
+    - gatewayports no
+    - permittunnel no
+    - x11forwarding no
+    - clientaliveinterval 300
+    - clientalivecountmax 2
+    - loglevel VERBOSE
+  loop_control:
+    label: "{{ item }}"
+
+- name: Require key-only root SSH in the effective policy
+  ansible.builtin.assert:
+    that:
+      - >-
+        base_sshd_effective_policy.stdout
+        is search('(?m)^permitrootlogin (?:prohibit-password|without-password)$')
+    fail_msg: >-
+      The effective OpenSSH policy must permit root only through public-key
+      authentication.
+
 - name: Check for the cgroup v2 controllers file
   ansible.builtin.stat:
     path: /sys/fs/cgroup/cgroup.controllers

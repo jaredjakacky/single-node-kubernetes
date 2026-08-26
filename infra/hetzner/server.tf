@@ -1,21 +1,21 @@
 locals {
   resource_labels = {
-    environment = "production"
-    system      = "single-node-kubernetes"
+    environment = var.deployment.environment
+    system      = var.deployment.system_name
     managed_by  = "terraform"
   }
 }
 
-data "hcloud_image" "debian_13_x86" {
-  name              = "debian-13"
-  with_architecture = "x86"
+data "hcloud_image" "debian" {
+  name              = var.deployment.image_name
+  with_architecture = var.deployment.image_architecture
 }
 
 resource "hcloud_server" "k8s_01" {
-  name        = "k8s-01"
-  location    = "nbg1"
-  server_type = "cx23"
-  image       = data.hcloud_image.debian_13_x86.id
+  name        = var.deployment.server_name
+  location    = var.deployment.location
+  server_type = var.deployment.server_type
+  image       = data.hcloud_image.debian.id
 
   ssh_keys     = [hcloud_ssh_key.admin.id]
   firewall_ids = [hcloud_firewall.k8s_01.id]

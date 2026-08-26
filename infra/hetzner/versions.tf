@@ -8,11 +8,8 @@ terraform {
     }
   }
 
-  cloud {
-    organization = "jaredjakacky"
-
-    workspaces {
-      name = "single-node-kubernetes"
-    }
-  }
+  # The private deployment repository supplies TF_CLOUD_ORGANIZATION and
+  # TF_WORKSPACE. Keeping this block empty prevents public source from owning a
+  # production account or workspace identity.
+  cloud {}
 }

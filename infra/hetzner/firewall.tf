@@ -1,5 +1,5 @@
 resource "hcloud_firewall" "k8s_01" {
-  name   = "k8s-01"
+  name   = var.deployment.server_name
   labels = local.resource_labels
 
   rule {
