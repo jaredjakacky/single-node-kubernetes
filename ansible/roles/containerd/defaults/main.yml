@@ -1,6 +1,6 @@
 ---
 # renovate: datasource=github-releases depName=containerd/containerd versioning=semver
-containerd_version: "2.3.4"
+containerd_version: "2.3.5"
 
 # renovate: datasource=github-releases depName=opencontainers/runc versioning=semver
 containerd_runc_version: "1.5.1"
