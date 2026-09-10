@@ -1,7 +1,7 @@
 ---
 # These are implementation integrity pins, not caller-selectable inputs.
 # renovate: datasource=github-releases depName=helm/helm versioning=semver
-cilium_helm_version: "4.2.4"
+cilium_helm_version: "4.3.0"
 # Renovate may propose the version; reviewers must copy the matching checksum
 # from the official get.helm.sh .sha256sum asset and update the contract test.
 cilium_helm_archive_sha256: >-
